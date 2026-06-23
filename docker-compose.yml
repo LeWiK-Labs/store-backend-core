@@ -1,0 +1,15 @@
+services:
+  db:
+    image: postgres:17
+    container_name: lewik_store_db
+    environment:
+      POSTGRES_USER: lewik
+      POSTGRES_PASSWORD: lewik_dev
+      POSTGRES_DB: lewik_store
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:
