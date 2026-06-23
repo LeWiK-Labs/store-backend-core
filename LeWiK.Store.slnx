@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="src/LeWiK.Store.Api/LeWiK.Store.Api.csproj" />
+  <Project Path="src/LeWiK.Store.App/LeWiK.Store.App.csproj" />
+  <Project Path="tests/LeWiK.Store.Tests/LeWiK.Tienda.Tests.csproj" />
+</Solution>
