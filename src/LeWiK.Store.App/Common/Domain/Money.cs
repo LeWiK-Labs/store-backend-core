@@ -7,7 +7,7 @@ public readonly record struct Money
 
     public Money(decimal amount, string currency)
     {
-        if (string.IsNullOrWhiteSpace(currency) || currency.Length != 3) throw new ArgumentException("Currency debe ser ISO 4217 (3 letras)", nameof(currency));
+        if (string.IsNullOrWhiteSpace(currency) || currency.Length != 3) throw new ArgumentException("Currency must be ISO 4217 (3 letters).", nameof(currency));
         Amount = amount;
         Currency = currency.ToUpperInvariant();
     }
@@ -19,7 +19,7 @@ public readonly record struct Money
     private void EnsureSame(Money other)
     {
         if(Currency != other.Currency)
-            throw new InvalidOperationException($"La moneda {Currency} difiera de la moneda {other.Currency}.");
+            throw new InvalidOperationException($"Currency mismatch: {Currency} vs {other.Currency}.");
     }
     
     public override string ToString() => $"{Amount:0.0000} {Currency}";
