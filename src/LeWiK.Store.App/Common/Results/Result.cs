@@ -1,10 +1,5 @@
 namespace LeWiK.Store.App.Common.Results;
 
-public sealed record Error(string Code, string Message)
-{
-    public static readonly Error None = new(string.Empty, string.Empty);
-}
-
 public class Result
 {
     public bool IsSuccess { get; }
@@ -31,4 +26,23 @@ public class Result<T> : Result
     public T Value => IsSuccess ? _value! : throw new InvalidOperationException("A failed result has no Value.");
     public static implicit operator Result<T>(T value) => Success(value);
     public static implicit operator Result<T>(Error error) => Failure<T>(error);
+}
+
+public enum ErrorType
+{
+    Failure,        // 500 - unexpected domain failure
+    Validation,     // 400
+    NotFound,       // 404
+    Conflict,       // 409
+    Unauthorized,   // 401
+    Forbidden       // 403
+}
+
+public sealed record Error(string Code, string Message, ErrorType Type = ErrorType.Failure)
+{
+    public static readonly Error None = new(string.Empty, string.Empty);
+
+    public static Error Validation(string code, string message) => new(code, message, ErrorType.Validation);
+    public static Error NotFound(string code, string message)   => new(code, message, ErrorType.NotFound);
+    public static Error Conflict(string code, string message)   => new(code, message, ErrorType.Conflict);
 }
