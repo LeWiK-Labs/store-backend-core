@@ -1,6 +1,7 @@
 using LeWiK.Store.Api.Common;
 using LeWiK.Store.App._Smoke;
 using LeWiK.Store.App.Common;
+using LeWiK.Store.App.Common.BackOffice;
 using LeWiK.Store.App.Common.Persistence;
 using LeWiK.Store.App.Common.Tenancy;
 using MediatR;
@@ -33,5 +34,17 @@ app.MapGet("/health/tenant", (ITenantContext tenant) =>
 // TEMPORARY smoke endpoint — remove in Fase 1
 app.MapGet("/ping", async (string? name, ISender sender) =>
     (await sender.Send(new PingQuery(name ?? ""))).ToHttpResult());
+
+// TEMPORARY smoke endpoint — remove once entitlement is enforced for real
+app.MapGet("/health/entitlement", async (ITenantContext tenant, IBackOfficeClient backOffice) =>
+{
+    if (!tenant.HasTenant)
+        return Results.Ok(new { message = "no tenant resolved" });
+
+    var entitlement = await backOffice.GetEntitlementAsync(tenant.TenantId);
+    return entitlement is null
+        ? Results.NotFound(new { message = "unknown tenant" })
+        : Results.Ok(entitlement);
+});
 
 app.Run();

@@ -1,4 +1,5 @@
 using FluentValidation;
+using LeWiK.Store.App.Common.BackOffice;
 using LeWiK.Store.App.Common.Messaging.Behaviors;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -27,6 +28,9 @@ public static class DependencyInjection
         });
         //Validators
         services.AddValidatorsFromAssembly(assembly);
+        //Clients
+        //back-office client (stub until the back-office exists)
+        services.AddSingleton<IBackOfficeClient, StubBackOfficeClient>();
         
         return services;
     }
