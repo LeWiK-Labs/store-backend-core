@@ -1,3 +1,5 @@
+using FluentValidation;
+using LeWiK.Store.App.Common.Messaging.Behaviors;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using LeWiK.Store.App.Common.Persistence;
@@ -9,9 +11,23 @@ public static class DependencyInjection
 {
     public static IServiceCollection AddStoreApp(this IServiceCollection services, string connectionString)
     {
+        //Tenancy
         services.AddScoped<TenantContext>();
         services.AddScoped<ITenantContext>(sp => sp.GetRequiredService<TenantContext>());
+        //Persistence
         services.AddDbContext<StoreDbContext>(o => o.UseNpgsql(connectionString));
+        //MediatR pipeline (order matters: outer->inner)
+        var assembly = System.Reflection.Assembly.GetExecutingAssembly();
+        services.AddMediatR(cfg =>
+        {
+            cfg.RegisterServicesFromAssembly(assembly);
+            cfg.AddOpenBehavior(typeof(LoggingBehavior<,>));
+            cfg.AddOpenBehavior(typeof(ValidationBehavior<,>));
+            cfg.AddOpenBehavior(typeof(UnitOfWorkBehavior<,>));
+        });
+        //Validators
+        services.AddValidatorsFromAssembly(assembly);
+        
         return services;
     }
 }
