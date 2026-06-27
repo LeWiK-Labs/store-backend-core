@@ -16,7 +16,7 @@ internal sealed class ProductConfiguration : IEntityTypeConfiguration<Product>
         
         builder.Property(p => p.Sku).IsRequired().HasMaxLength(64);
         builder.Property(p => p.Name).IsRequired().HasMaxLength(200);
-        builder.Property(p => p.Description).IsRequired().HasMaxLength(2000);
+        builder.Property(p => p.Description).IsRequired().HasMaxLength(2000).IsRequired(false);
         
         builder.Property(p => p.Status).HasConversion<string>().HasMaxLength(20);
         

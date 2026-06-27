@@ -1,4 +1,5 @@
 using FluentValidation;
+using LeWiK.Store.App.Common.Messaging.Behaviors;
 using Microsoft.AspNetCore.Diagnostics;
 
 namespace LeWiK.Store.Api.Common;
@@ -18,11 +19,15 @@ public sealed class GlobalExceptionHandler(ILogger<GlobalExceptionHandler> logge
                     .ExecuteAsync(context);
                 return true;
             
+            case MissingTenantException:
+                await Results.Problem(statusCode: StatusCodes.Status400BadRequest, title: "No tenant resolved").ExecuteAsync(context);
+                return true;
+            
             default:
                 logger.LogError(exception, "Unhandled exception");
                 await Results.Problem(
                     statusCode: StatusCodes.Status500InternalServerError,
-                    title: "An unexpeted error occured")
+                    title: "An unexpected error occured")
                 .ExecuteAsync(context);
                 return true;
         }
