@@ -16,7 +16,7 @@ public static class DependencyInjection
         services.AddScoped<TenantContext>();
         services.AddScoped<ITenantContext>(sp => sp.GetRequiredService<TenantContext>());
         //Persistence
-        services.AddDbContext<StoreDbContext>(o => o.UseNpgsql(connectionString));
+        services.AddDbContext<StoreDbContext>(o => o.UseNpgsql(connectionString).UseSnakeCaseNamingConvention());
         //MediatR pipeline (order matters: outer->inner)
         var assembly = System.Reflection.Assembly.GetExecutingAssembly();
         services.AddMediatR(cfg =>
