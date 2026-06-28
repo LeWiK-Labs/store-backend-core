@@ -4,7 +4,7 @@ using LeWiK.Store.App.Common.Tenancy;
 
 namespace LeWiK.Store.App.Inventory.Domain;
 
-public enum StockMovementType { StockIn, Reserve, Release, Fullfill, Adjust }
+public enum StockMovementType { StockIn, Reserve, Release, Fulfill, Adjust }
 
 public sealed class InventoryItem : Entity, ITenantScoped, IAuditable
 {
@@ -58,7 +58,7 @@ public sealed class InventoryItem : Entity, ITenantScoped, IAuditable
         RequirePositive(quantity);
         if (quantity > ReservedQuantity) return InventoryErrors.InsufficientReserved(quantity, ReservedQuantity);
         ReservedQuantity -= quantity;
-        Record(StockMovementType.Fullfill, quantity);
+        Record(StockMovementType.Fulfill, quantity);
         return Result.Success();
     }
 
