@@ -1,0 +1,30 @@
+info:
+  name: List Products
+  type: http
+  seq: 2
+http:
+  method: GET
+  url: "{{baseUrl}}/products"
+  auth: inherit
+runtime:
+  scripts:
+    - type: tests
+      code: |-
+        test("returns 200", function() {
+          expect(res.status).to.equal(200);
+        });
+        test("returns an array", function() {
+          expect(res.body).to.be.an("array");
+        });
+settings:
+  encodeUrl: true
+docs: |-
+  # List Products
+  Lista los productos del **tenant activo**, ordenados por nombre.
+
+  Solo devuelve los del tenant del `X-Tenant-Id`. Cambiá de environment
+  (Tenant A ↔ Tenant B) y vas a ver catálogos distintos: esa es la demo
+  de aislamiento, ahora a un clic.
+
+  ## Respuesta
+  - **200** — array de `{ id, sku, name, description, priceAmount, priceCurrency, status }`

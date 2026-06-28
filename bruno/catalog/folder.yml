@@ -1,0 +1,6 @@
+info:
+  name: Catalog
+  type: folder
+  seq: 1
+docs: |-
+  Catálogo de productos sellados (boxes, sobres, ETBs). Todo scoped al tenant activo.

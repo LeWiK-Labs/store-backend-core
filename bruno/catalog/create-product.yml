@@ -1,0 +1,53 @@
+info:
+  name: Create Product
+  type: http
+  seq: 1
+http:
+  method: POST
+  url: "{{baseUrl}}/products"
+  headers:
+    - name: Content-Type
+      value: application/json
+  body:
+    type: json
+    data: |-
+      {
+        "sku": "BOX-SV01",
+        "name": "Scarlet & Violet Booster Box",
+        "description": "36 sobres",
+        "price": 150000,
+        "currency": "CLP"
+      }
+  auth: inherit
+runtime:
+  scripts:
+    - type: tests
+      code: |-
+        test("returns 200", function() {
+          expect(res.status).to.equal(200);
+        });
+        test("returns a product id", function() {
+          expect(res.body).to.be.a("string");
+        });
+settings:
+  encodeUrl: true
+docs: |-
+  # Create Product
+  Crea un producto sellado en el catálogo del **tenant activo**.
+
+  El tenant sale del header `X-Tenant-Id` (heredado de la colección, lo pone
+  el environment). No se manda en el body — el cliente no puede falsear la tienda.
+
+  ## Body
+  | campo | tipo | req | nota |
+  |---|---|:--:|---|
+  | sku | string | sí | único por tenant, máx 64 |
+  | name | string | sí | máx 200 |
+  | description | string | no | máx 2000 |
+  | price | number | sí | >= 0 |
+  | currency | string | sí | ISO 4217 (3 letras) |
+
+  ## Respuestas
+  - **200** — GUID del producto creado
+  - **409** `catalog.duplicate_sku` — el SKU ya existe en el tenant
+  - **400** — validación de campos, o "No tenant resolved" si falta el tenant

@@ -1,0 +1,4 @@
+# folder.yml
+info: { name: Health, type: folder, seq: 99 }
+docs: |-
+  Endpoints de diagnóstico (temporales, varios se borran al endurecer auth).

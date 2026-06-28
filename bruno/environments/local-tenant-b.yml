@@ -1,0 +1,7 @@
+vars:
+  - name: baseUrl
+    value: http://localhost:5223
+    enabled: true
+  - name: tenantId
+    value: 22222222-2222-2222-2222-222222222222
+    enabled: true

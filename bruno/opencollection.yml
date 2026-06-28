@@ -1,0 +1,14 @@
+info:
+  name: LeWiK Store API
+  type: collection
+headers:
+  - name: X-Tenant-Id
+    value: "{{tenantId}}"
+    enabled: true
+docs: |-
+  # LeWiK Store API
+  Backend de la tienda online (TCG), modular monolith en .NET.
+
+  **Multi-tenant:** cada request lleva `X-Tenant-Id`, heredado de esta
+  colección y poblado por el environment activo. Cambiá entre
+  "Local · Tenant A/B" para operar como tiendas distintas.
