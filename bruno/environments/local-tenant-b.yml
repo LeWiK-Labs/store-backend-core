@@ -1,4 +1,5 @@
-vars:
+name: local-tenant-a
+variables:
   - name: baseUrl
     value: http://localhost:5223
     enabled: true
