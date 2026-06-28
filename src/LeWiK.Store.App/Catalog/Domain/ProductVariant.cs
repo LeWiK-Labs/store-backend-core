@@ -12,6 +12,9 @@ public sealed class ProductVariant : Entity, ITenantScoped, IAuditable
     public Money Price { get; private set; }
     public DateTime CreatedAt { get; private set; }
     public DateTime UpdatedAt { get; private set; }
+
+    private readonly List<VariantOptionValue> _optionValues = [];
+    public IReadOnlyCollection<VariantOptionValue> OptionValues => _optionValues.AsReadOnly();
     
     private ProductVariant() {} // EF
 

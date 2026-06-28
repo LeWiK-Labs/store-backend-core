@@ -17,6 +17,9 @@ public sealed class Product : Entity, ITenantScoped, IAuditable
     private readonly List<ProductVariant> _variants = [];
     public IReadOnlyCollection<ProductVariant> Variants => _variants.AsReadOnly();
     
+    private readonly List<ProductOption>  _options = [];
+    public IReadOnlyCollection<ProductOption> Options => _options.AsReadOnly();
+    
     private Product() {}
 
     public Product(Guid tenantId, string name, string? description, string defaultSku, Money defaultPrice)
