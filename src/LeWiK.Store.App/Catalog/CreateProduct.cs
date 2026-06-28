@@ -34,14 +34,14 @@ public sealed class CreateProductHandler(StoreDbContext db, ITenantContext tenta
 {
     public async Task<Result<Guid>> Handle(CreateProductCommand request, CancellationToken ct)
     {
-        var skuExists = await db.Set<Product>().AnyAsync(p => p.Sku == request.Sku, ct);
+        var skuExists = await db.Set<ProductVariant>().AnyAsync(v => v.Sku == request.Sku, ct);
         if (skuExists) return CatalogErrors.DuplicateSku(request.Sku);
 
         var product = new Product(
             tentant.TenantId,
-            request.Sku,
             request.Name,
             request.Description,
+            request.Sku,
             new Money(request.Price, request.Currency)
         );
 
