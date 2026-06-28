@@ -1,4 +1,5 @@
 using LeWiK.Store.Api.Catalog;
+using LeWiK.Store.Api.Inventory;
 using LeWiK.Store.App.Common;
 using LeWiK.Store.App.Common.BackOffice;
 using LeWiK.Store.App.Common.Persistence;
@@ -35,6 +36,7 @@ app.MapGet("/health/tenant", (ITenantContext tenant) =>
         : Results.Ok(new { message = "no tenant resolved" }));
 
 app.MapCatalogEndpoints();
+app.MapInventoryEndpoints();
 
 // TEMPORARY smoke endpoint — remove once entitlement is enforced for real
 app.MapGet("/health/entitlement", async (ITenantContext tenant, IBackOfficeClient backOffice) =>

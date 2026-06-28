@@ -5,8 +5,10 @@ namespace LeWiK.Store.App.Inventory;
 public static class InventoryErrors
 {
     public static Error InsufficientStock(int requested, int available) =>
-        Error.Conflict("inventory.insufficient_stock", $"Requested: {requested} but only available: {available} available");
+        Error.Conflict("inventory.insufficient_stock", $"Requested: {requested} but only available: {available} available.");
     
     public static Error InsufficientReserved(int requested, int reserved) =>
-        Error.Conflict("inventory.insufficient_reserved", $"Requested: {requested} but only {reserved} reserved");
+        Error.Conflict("inventory.insufficient_reserved", $"Requested: {requested} but only {reserved} reserved.");
+    
+    public static Error NoInventory(Guid productVariantId) => Error.NotFound("inventory.not_found", $"No inventory for variant {productVariantId}.");
 }

@@ -28,3 +28,11 @@ docs: |-
 
   ## Respuesta
   - **200** — array de `{ id, sku, name, description, priceAmount, priceCurrency, status }`
+runtime:
+  scripts:
+    - type: tests
+      code: |-
+        test("returns 200", function() { expect(res.status).to.equal(200); });
+        if (res.body.length && res.body[0].variants.length) {
+          bru.setEnvVar("variantId", res.body[0].variants[0].id);
+        }

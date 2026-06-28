@@ -1,0 +1,43 @@
+info:
+  name: Add Stock
+  type: http
+  seq: 1
+http:
+  method: POST
+  url: "{{baseUrl}}/variants/{{variantId}}/stock"
+  headers:
+    - name: Content-Type
+      value: application/json
+  body:
+    type: json
+    data: |-
+      {
+        "quantity": 50,
+        "reason": "Initial restock"
+      }
+  auth: inherit
+runtime:
+  scripts:
+    - type: tests
+      code: |-
+        test("returns 200", function() {
+          expect(res.status).to.equal(200);
+        });
+settings:
+  encodeUrl: true
+docs: |-
+  # Add Stock
+  Suma stock físico a una **variante** del tenant activo. Si la variante no
+  tiene inventario aún, se crea en 0 y se suma.
+
+  `variantId` va en la URL (variable de environment). El tenant sale del header heredado.
+
+  ## Body
+  | campo | tipo | req | nota |
+  |---|---|:--:|---|
+  | quantity | number | sí | > 0 |
+  | reason | string | no | nota del movimiento, máx 500 |
+
+  ## Respuestas
+  - **200** — `{ productVariantId, available, reserved }`
+  - **400** — validación o sin tenant

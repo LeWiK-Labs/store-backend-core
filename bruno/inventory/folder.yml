@@ -1,0 +1,6 @@
+info:
+  name: Inventory
+  type: folder
+  seq: 2
+docs: |-
+  Stock físico por variante: disponible y reservado, con ledger de movimientos.
