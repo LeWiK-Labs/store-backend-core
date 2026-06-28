@@ -10,7 +10,7 @@ namespace LeWiK.Store.App.Common;
 
 public static class DependencyInjection
 {
-    public static IServiceCollection AddStoreApp(this IServiceCollection services, string connectionString)
+    public static IServiceCollection AddStoreApp(this IServiceCollection services, string connectionString, string? redisConnectionString = null)
     {
         //Tenancy
         services.AddScoped<TenantContext>();
@@ -32,6 +32,11 @@ public static class DependencyInjection
         //Clients
         //back-office client (stub until the back-office exists)
         services.AddSingleton<IBackOfficeClient, StubBackOfficeClient>();
+        
+        // Distributed cache: Redis when configured, in-memory fallback otherwise.
+        if (!string.IsNullOrEmpty(redisConnectionString))
+            services.AddStackExchangeRedisCache(o => o.Configuration = redisConnectionString);
+        else services.AddDistributedMemoryCache();
         
         return services;
     }

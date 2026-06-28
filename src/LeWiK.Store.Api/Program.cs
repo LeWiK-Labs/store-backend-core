@@ -3,12 +3,17 @@ using LeWiK.Store.App.Common;
 using LeWiK.Store.App.Common.BackOffice;
 using LeWiK.Store.App.Common.Persistence;
 using LeWiK.Store.App.Common.Tenancy;
+using Microsoft.Extensions.Caching.Distributed;
 
 var builder = WebApplication.CreateBuilder(args);
+var redisConnection = builder.Configuration.GetConnectionString("Redis");
 
-builder.Services.AddStoreApp(builder.Configuration.GetConnectionString("Default")!);
+builder.Services.AddStoreApp(builder.Configuration.GetConnectionString("Default")!, redisConnection);
 builder.Services.AddExceptionHandler<LeWiK.Store.Api.Common.GlobalExceptionHandler>();
 builder.Services.AddProblemDetails();
+
+var signalR = builder.Services.AddSignalR();
+if(!string.IsNullOrWhiteSpace(redisConnection)) signalR.AddStackExchangeRedis(redisConnection);
 
 var app = builder.Build();
 
@@ -42,5 +47,14 @@ app.MapGet("/health/entitlement", async (ITenantContext tenant, IBackOfficeClien
         ? Results.NotFound(new { message = "unknown tenant" })
         : Results.Ok(entitlement);
 });
+
+// exercises the real Redis connection (set + get round-trip)
+app.MapGet("/health/cache", async (IDistributedCache cache) =>
+{
+    await cache.SetStringAsync("health:ping", "ok");
+    return Results.Ok(new { cache = await cache.GetStringAsync("health:ping") });
+});
+
+app.MapHub<LeWiK.Store.Api.Realtime.StoreHub>("/hubs/store");
 
 app.Run();
