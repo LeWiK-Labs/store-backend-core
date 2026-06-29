@@ -37,7 +37,7 @@ public sealed class CreateProductHandler(StoreDbContext db, ITenantContext tenta
         var skuExists = await db.Set<ProductVariant>().AnyAsync(v => v.Sku == request.Sku, ct);
         if (skuExists) return CatalogErrors.DuplicateSku(request.Sku);
 
-        var product = new Product(
+        var product = Product.CreateSimple(
             tentant.TenantId,
             request.Name,
             request.Description,

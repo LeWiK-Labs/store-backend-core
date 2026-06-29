@@ -1,0 +1,58 @@
+info:
+  name: Create Product with Options
+  type: http
+  seq: 3
+http:
+  method: POST
+  url: "{{baseUrl}}/products/with-options"
+  headers:
+    - name: Content-Type
+      value: application/json
+  body:
+    type: json
+    data: |-
+      {
+        "name": "Blister Paldea Evolved",
+        "description": "Blister con carta promo",
+        "options": [
+          { "name": "Carta",  "values": ["Charizard", "Meganium"] },
+          { "name": "Idioma", "values": ["Inglés", "Español"] }
+        ],
+        "variants": [
+          { "sku": "BLI-CHAR-EN", "price": 12990, "currency": "CLP", "selections": { "Carta": "Charizard", "Idioma": "Inglés" } },
+          { "sku": "BLI-CHAR-ES", "price": 12990, "currency": "CLP", "selections": { "Carta": "Charizard", "Idioma": "Español" } },
+          { "sku": "BLI-MEGA-EN", "price": 11990, "currency": "CLP", "selections": { "Carta": "Meganium", "Idioma": "Inglés" } }
+        ]
+      }
+  auth: inherit
+runtime:
+  scripts:
+    - type: tests
+      code: |-
+        test("returns 200", function() {
+          expect(res.status).to.equal(200);
+        });
+settings:
+  encodeUrl: true
+docs: |-
+  # Create Product with Options
+  Crea un producto con **ejes de opción** (options) y variantes explícitas como
+  combinaciones sobre esos ejes. Para el tenant activo.
+
+  Modela el caso del blister: ejes ortogonales (Carta, Idioma) y las variantes
+  que realmente se venden — admite **matriz rala** (acá Meganium/Español no se incluye).
+
+  ## Body
+  - `options[]` — los ejes: `{ name, values[] }`. Nombres únicos, values únicos por eje.
+  - `variants[]` — las combinaciones vendibles:
+    - `sku` — único por tenant
+    - `price` / `currency` — ISO 4217
+    - `selections` — un value por cada eje definido (`{ "Carta": "...", "Idioma": "..." }`)
+
+  ## Respuestas
+  - **200** — GUID del producto creado
+  - **409** `catalog.duplicate_sku` — SKU repetido (en el request o ya existente)
+  - **409** `catalog.duplicate_combination` — dos variantes en la misma celda
+  - **400** — validación de forma, o coherencia de matriz:
+    `catalog.incomplete_selection` (falta un eje), `catalog.unknown_selection`
+    (value inexistente), `catalog.empty_option`, `catalog.duplicate_option_value`

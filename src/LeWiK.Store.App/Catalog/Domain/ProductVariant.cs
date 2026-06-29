@@ -33,4 +33,6 @@ public sealed class ProductVariant : Entity, ITenantScoped, IAuditable
     
     internal static ProductVariant Create(Product p, string sku, string label, Money price) =>
         new(p.TenantId, p.Id, sku, label, price);
+    
+    internal void LinkOptionValue(Guid optionValueId) => _optionValues.Add(new VariantOptionValue(Id, optionValueId));
 }

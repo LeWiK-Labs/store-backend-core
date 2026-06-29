@@ -13,6 +13,9 @@ public static class CatalogEndpoints
 
         group.MapPost("/",
             async (CreateProductCommand command, ISender sender) => (await sender.Send(command)).ToHttpResult());
+        
+        group.MapPost("/with-options", async (CreateProductWithOptionsCommand command, ISender sender) =>
+            (await sender.Send(command)).ToHttpResult());
 
         group.MapGet("/", async (ISender sender) => (await sender.Send(new ListProductsQuery())).ToHttpResult());
 
