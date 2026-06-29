@@ -1,0 +1,6 @@
+info:
+  name: Preorders
+  type: folder
+  seq: 3
+docs: |-
+  Configuración de drops/preventas por variante: cupo, fecha de release y abono.

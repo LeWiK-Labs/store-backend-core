@@ -1,0 +1,22 @@
+info:
+  name: Get Preorder
+  type: http
+  seq: 2
+http:
+  method: GET
+  url: "{{baseUrl}}/variants/{{variantId}}/preorder"
+  auth: inherit
+runtime:
+  scripts:
+    - type: tests
+      code: |-
+        test("returns 200", function() { expect(res.status).to.equal(200); });
+settings:
+  encodeUrl: true
+docs: |-
+  # Get Preorder
+  Devuelve el drop de una variante (cupo, vendido, disponible, release, abono).
+
+  ## Respuestas
+  - **200** — el preorder
+  - **404** `preorder.not_found` — la variante no tiene preorder configurado

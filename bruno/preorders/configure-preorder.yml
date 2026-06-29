@@ -1,0 +1,42 @@
+info:
+  name: Configure Preorder
+  type: http
+  seq: 1
+http:
+  method: PUT
+  url: "{{baseUrl}}/variants/{{variantId}}/preorder"
+  headers:
+    - name: Content-Type
+      value: application/json
+  body:
+    type: json
+    data: |-
+      {
+        "capacity": 100,
+        "releaseDate": "2026-09-01T00:00:00Z",
+        "depositType": "Percentage",
+        "depositValue": 30
+      }
+  auth: inherit
+runtime:
+  scripts:
+    - type: tests
+      code: |-
+        test("returns 200", function() { expect(res.status).to.equal(200); });
+settings:
+  encodeUrl: true
+docs: |-
+  # Configure Preorder
+  Crea o reconfigura el drop de una **variante** (upsert). Para el tenant activo.
+
+  ## Body
+  | campo | tipo | nota |
+  |---|---|---|
+  | capacity | number | cupo total del drop (> 0) |
+  | releaseDate | ISO datetime | cuándo llega el stock |
+  | depositType | string | `None` \| `Percentage` \| `FixedPerUnit` |
+  | depositValue | number | % (0-100) si Percentage; monto por unidad si FixedPerUnit; ignorado si None |
+
+  ## Respuestas
+  - **200** — estado del preorder (`{ ..., availableCapacity, soldCount, status }`)
+  - **400** `preorder.capacity_below_sold` — bajar el cupo por debajo de lo ya vendido, o validación de forma
