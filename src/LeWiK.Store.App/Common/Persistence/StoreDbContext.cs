@@ -19,10 +19,11 @@ public class StoreDbContext(DbContextOptions<StoreDbContext> options, ITenantCon
 
         foreach (var entityType in modelBuilder.Model.GetEntityTypes())
         {
+            if (typeof(AggregateRoot).IsAssignableFrom(entityType.ClrType))
+                modelBuilder.Entity(entityType.ClrType).Ignore(nameof(AggregateRoot.DomainEvents));
+
             if (typeof(ITenantScoped).IsAssignableFrom(entityType.ClrType))
-            {
                 ApplyTenantFilterMethod.MakeGenericMethod(entityType.ClrType).Invoke(this, [modelBuilder]);
-            }
         }
     }
 

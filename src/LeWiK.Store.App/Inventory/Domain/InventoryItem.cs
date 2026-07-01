@@ -6,7 +6,7 @@ namespace LeWiK.Store.App.Inventory.Domain;
 
 public enum StockMovementType { StockIn, Reserve, Release, Fulfill, Adjust }
 
-public sealed class InventoryItem : Entity, ITenantScoped, IAuditable
+public sealed class InventoryItem : AggregateRoot, ITenantScoped, IAuditable
 {
     public Guid TenantId { get; private init; }
     public Guid ProductVariantId { get; private init; }
@@ -62,9 +62,12 @@ public sealed class InventoryItem : Entity, ITenantScoped, IAuditable
         return Result.Success();
     }
 
-    private void Record(StockMovementType type, int quantity, string? reason = null) =>
+    private void Record(StockMovementType type, int quantity, string? reason = null)
+    {
         _movements.Add(new StockMovement(Id, type, quantity, reason));
-    
+        Raise(new StockChanged(TenantId, ProductVariantId, AvailableQuantity, ReservedQuantity));
+    }
+
     private static void RequirePositive(int quantity)
     {
         if(quantity <= 0) throw new ArgumentOutOfRangeException(nameof(quantity), "Quantity must be positive");
