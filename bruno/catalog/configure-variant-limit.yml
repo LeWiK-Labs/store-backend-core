@@ -1,0 +1,41 @@
+info:
+  name: Configure Variant Limit
+  type: http
+  seq: 6
+http:
+  method: PUT
+  url: "{{baseUrl}}/variants/{{variantId}}/purchase-limit"
+  headers:
+    - name: Content-Type
+      value: application/json
+  body:
+    type: json
+    data: |-
+      {
+        "maxPerOrder": 1,
+        "maxPerCustomer": 2,
+        "windowDays": 30
+      }
+  auth: inherit
+runtime:
+  scripts:
+    - type: tests
+      code: |-
+        test("returns 200", function() { expect(res.status).to.equal(200); });
+settings:
+  encodeUrl: true
+docs: |-
+  # Configure Variant Limit
+  Límite anti-scalping de una **variante específica** (ej. la versión inglés).
+  Convive con el límite de producto: en Orders se enforcan **ambos**.
+
+  ## Body (al menos uno de los dos máximos)
+  | campo | tipo | nota |
+  |---|---|---|
+  | maxPerOrder | number? | máx unidades de esta variante por pedido |
+  | maxPerCustomer | number? | máx por cliente en la ventana |
+  | windowDays | number? | ventana para maxPerCustomer; null = histórico |
+
+  ## Respuestas
+  - **200** — la política `{ scope: "Variant", targetId, ... }`
+  - **400** — validación

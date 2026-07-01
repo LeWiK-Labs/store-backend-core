@@ -20,4 +20,6 @@ public static class CatalogErrors
         Error.Validation("catalog.unknown_selection", $"Variant '{sku}' selects unknown value '{value}' for '{option}'.");
     public static Error DuplicateCombination(string sku) =>
         Error.Conflict("catalog.duplicate_combination", $"Variant '{sku}' duplicates an existing option combination.");
+    public static Error NoPurchaseLimit(Guid productId) =>
+        Error.NotFound("catalog.no_purchase_limit", $"No purchase limit set for product {productId}.");
 }
