@@ -6,42 +6,47 @@ namespace LeWiK.Store.App.Inventory;
 
 internal sealed class InventoryConfiguration : IEntityTypeConfiguration<InventoryItem>
 {
-    public void Configure(EntityTypeBuilder<InventoryItem> b)
+    public void Configure(EntityTypeBuilder<InventoryItem> builder)
     {
-        b.ToTable("inventories");
-        b.HasKey(i => i.Id);
+        builder.ToTable("inventories");
+        builder.HasKey(i => i.Id);
 
-        b.Property(i => i.TenantId).IsRequired();
-        b.Property(i => i.ProductVariantId).IsRequired();
-        b.HasIndex(i => new { i.TenantId, i.ProductVariantId }).IsUnique(); // one inventory per variant per tenant
+        builder.Property(i => i.TenantId).IsRequired();
+        builder.Property(i => i.ProductVariantId).IsRequired();
+        builder.HasIndex(i => new { i.TenantId, i.ProductVariantId }).IsUnique(); // one inventory per variant per tenant
 
-        b.Property(i => i.AvailableQuantity).IsRequired();
-        b.Property(i => i.ReservedQuantity).IsRequired();
-        b.Property(i => i.CreatedAt).IsRequired();
-        b.Property(i => i.UpdatedAt).IsRequired();
+        builder.Property(i => i.AvailableQuantity).IsRequired();
+        builder.Property(i => i.ReservedQuantity).IsRequired();
+        builder.Property(i => i.CreatedAt).IsRequired();
+        builder.Property(i => i.UpdatedAt).IsRequired();
 
         // Aggregate: InventoryItem owns its movements (append-only ledger).
-        b.HasMany(i => i.Movements)
+        builder.HasMany(i => i.Movements)
             .WithOne()
             .HasForeignKey(m => m.InventoryId)
             .OnDelete(DeleteBehavior.Cascade);
-        b.Navigation(i => i.Movements).UsePropertyAccessMode(PropertyAccessMode.Field);
+        builder.Navigation(i => i.Movements).UsePropertyAccessMode(PropertyAccessMode.Field);
+        // A uint rowversion maps to Postgres' xmin system column automatically.
+        // uint rowversion mapped explicitly to Postgres' xmin system column.
+        builder.Property<uint>("xmin")
+            .HasColumnName("xmin")
+            .IsRowVersion();
     }
 }
 
 internal sealed class StockMovementConfiguration : IEntityTypeConfiguration<StockMovement>
 {
-    public void Configure(EntityTypeBuilder<StockMovement> b)
+    public void Configure(EntityTypeBuilder<StockMovement> builder)
     {
-        b.ToTable("stock_movements");
-        b.HasKey(m => m.Id);
+        builder.ToTable("stock_movements");
+        builder.HasKey(m => m.Id);
 
-        b.Property(m => m.InventoryId).IsRequired();
-        b.Property(m => m.Type).HasConversion<string>().HasMaxLength(20).IsRequired();
-        b.Property(m => m.Quantity).IsRequired();
-        b.Property(m => m.Reason).HasMaxLength(500).IsRequired(false);
-        b.Property(m => m.CreatedAt).IsRequired();
+        builder.Property(m => m.InventoryId).IsRequired();
+        builder.Property(m => m.Type).HasConversion<string>().HasMaxLength(20).IsRequired();
+        builder.Property(m => m.Quantity).IsRequired();
+        builder.Property(m => m.Reason).HasMaxLength(500).IsRequired(false);
+        builder.Property(m => m.CreatedAt).IsRequired();
 
-        b.HasIndex(m => m.InventoryId);
+        builder.HasIndex(m => m.InventoryId);
     }
 }

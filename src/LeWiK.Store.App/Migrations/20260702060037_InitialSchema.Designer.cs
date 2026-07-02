@@ -13,8 +13,8 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace LeWiK.Store.App.Migrations
 {
     [DbContext(typeof(StoreDbContext))]
-    [Migration("20260702010953_OrdersAndCustomers")]
-    partial class OrdersAndCustomers
+    [Migration("20260702060037_InitialSchema")]
+    partial class InitialSchema
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -351,6 +351,12 @@ namespace LeWiK.Store.App.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at");
 
+                    b.Property<uint>("xmin")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
+
                     b.HasKey("Id")
                         .HasName("pk_inventories");
 
@@ -442,6 +448,10 @@ namespace LeWiK.Store.App.Migrations
                         .HasMaxLength(20)
                         .HasColumnType("character varying(20)")
                         .HasColumnName("payment_status");
+
+                    b.Property<DateTime?>("ReservationExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("reservation_expires_at");
 
                     b.Property<Guid>("TenantId")
                         .HasColumnType("uuid")
@@ -583,6 +593,12 @@ namespace LeWiK.Store.App.Migrations
                     b.Property<DateTime>("UpdatedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at");
+
+                    b.Property<uint>("xmin")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
 
                     b.HasKey("Id")
                         .HasName("pk_preorders");
