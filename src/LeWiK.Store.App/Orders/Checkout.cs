@@ -36,7 +36,7 @@ public sealed class CheckoutValidator : AbstractValidator<CheckoutCommand>
     }
 }
 
-public sealed class CheckoutHandler(StoreDbContext db, ITenantContext tenant)
+public sealed class CheckoutHandler(StoreDbContext db, ITenantContext tenant, PurchaseLimitEnforcer limitEnforcer)
     : IRequestHandler<CheckoutCommand, Result<Guid>>
 {
     public async Task<Result<Guid>> Handle(CheckoutCommand request, CancellationToken ct)
@@ -61,7 +61,19 @@ public sealed class CheckoutHandler(StoreDbContext db, ITenantContext tenant)
         }
 
         var drafts = new List<OrderLineDraft>();
+        var intents = new List<PurchaseIntent>();
         var depositDue = 0m;
+        
+        foreach (var item in items)
+        {
+            var variant = await db.Set<ProductVariant>().FirstOrDefaultAsync(v => v.Id == item.VariantId, ct);
+            if (variant is null) return OrderErrors.VariantNotFound(item.VariantId);
+            intents.Add(new PurchaseIntent(variant.ProductId, variant.Id, item.Quantity));
+        }
+
+        // Enforce anti-scalping limits before touching stock.
+        var limitCheck = await limitEnforcer.CheckAsync(customer.Id, intents, ct);
+        if (limitCheck.IsFailure) return limitCheck.Error;
 
         foreach (var item in items)
         {
@@ -86,7 +98,7 @@ public sealed class CheckoutHandler(StoreDbContext db, ITenantContext tenant)
                 if (reserve.IsFailure) return reserve.Error;
 
                 depositDue += preorder.CalculateDeposit(variant.Price, item.Quantity).Amount;
-                drafts.Add(new OrderLineDraft(variant.Id, variant.Sku, nameSnapshot,
+                drafts.Add(new OrderLineDraft(variant.ProductId, variant.Id, variant.Sku, nameSnapshot,
                     variant.Price.Amount, variant.Price.Currency, item.Quantity, IsPreorder: true));
             }
             else
@@ -101,7 +113,7 @@ public sealed class CheckoutHandler(StoreDbContext db, ITenantContext tenant)
                 if (reserve.IsFailure) return reserve.Error;
 
                 depositDue += variant.Price.Multiply(item.Quantity).Amount;
-                drafts.Add(new OrderLineDraft(variant.Id, variant.Sku, nameSnapshot,
+                drafts.Add(new OrderLineDraft(variant.ProductId, variant.Id, variant.Sku, nameSnapshot,
                     variant.Price.Amount, variant.Price.Currency, item.Quantity, IsPreorder: false));
             }
         }

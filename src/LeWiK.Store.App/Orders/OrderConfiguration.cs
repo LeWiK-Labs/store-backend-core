@@ -47,6 +47,7 @@ internal sealed class OrderLineConfiguration : IEntityTypeConfiguration<OrderLin
         builder.HasKey(l => l.Id);
 
         builder.Property(l => l.OrderId).IsRequired();
+        builder.Property(l => l.ProductId).IsRequired();
         builder.Property(l => l.ProductVariantId).IsRequired();
         builder.Property(l => l.Sku).IsRequired().HasMaxLength(64);
         builder.Property(l => l.NameSnapshot).IsRequired().HasMaxLength(200);

@@ -50,7 +50,7 @@ public sealed class Order : AggregateRoot, ITenantScoped, IAuditable
 
         var order = new Order(tenantId, customerId, currency);
         foreach (var d in lines)
-            order._lines.Add(new OrderLine(order.Id, d.ProductVariantId, d.Sku, d.NameSnapshot,
+            order._lines.Add(new OrderLine(order.Id, d.ProductId, d.ProductVariantId, d.Sku, d.NameSnapshot,
                 new Money(d.UnitPrice, currency), d.Quantity, d.IsPreorder));
 
         order.TotalAmount = order._lines.Sum(l => l.LineTotal.Amount);

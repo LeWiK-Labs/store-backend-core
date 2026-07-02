@@ -6,6 +6,7 @@ namespace LeWiK.Store.App.Orders.Domain;
 public sealed class OrderLine : Entity
 {
     public Guid OrderId { get; private init; }
+    public Guid ProductId { get; private init; }
     public Guid ProductVariantId { get; private init; }
     public string Sku { get; private init; } = null!;      // snapshot at order time
     public string NameSnapshot { get; private init; } = null!;
@@ -20,11 +21,12 @@ public sealed class OrderLine : Entity
     
     private OrderLine() {} //EF
     
-    internal OrderLine(Guid orderId, Guid productVariantId, string sku, string nameSnapshot,
+    internal OrderLine(Guid orderId, Guid productId, Guid productVariantId, string sku, string nameSnapshot,
         Money unitPrice, int qtyOrdered, bool isPreorder)
     {
         Id = Guid.CreateVersion7();
         OrderId = orderId;
+        ProductId = productId;
         ProductVariantId = productVariantId;
         Sku = sku;
         NameSnapshot = nameSnapshot;

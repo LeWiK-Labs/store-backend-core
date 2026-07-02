@@ -33,6 +33,8 @@ public static class DependencyInjection
         //Clients
         //back-office client (stub until the back-office exists)
         services.AddSingleton<IBackOfficeClient, StubBackOfficeClient>();
+
+        services.AddScoped<Orders.PurchaseLimitEnforcer>();
         
         // Distributed cache: Redis when configured, in-memory fallback otherwise.
         if (!string.IsNullOrEmpty(redisConnectionString))
