@@ -1,0 +1,22 @@
+info:
+  name: Get Order
+  type: http
+  seq: 2
+http:
+  method: GET
+  url: "{{baseUrl}}/orders/{{orderId}}"
+  auth: inherit
+runtime:
+  scripts:
+    - type: tests
+      code: |-
+        test("returns 200", function() { expect(res.status).to.equal(200); });
+settings:
+  encodeUrl: true
+docs: |-
+  # Get Order
+  Devuelve el pedido: estados (fulfillment + pago), total/pagado/saldo/abono, y líneas.
+
+  ## Respuestas
+  - **200** — el pedido
+  - **404** `order.not_found`

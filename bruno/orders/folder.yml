@@ -1,0 +1,3 @@
+info: { name: Orders, type: folder, seq: 4 }
+docs: |-
+  Checkout (coloca pedidos) y consulta de pedidos. El pago y el fulfillment son 2.4.5.

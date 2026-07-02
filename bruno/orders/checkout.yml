@@ -1,0 +1,45 @@
+info:
+  name: Checkout
+  type: http
+  seq: 1
+http:
+  method: POST
+  url: "{{baseUrl}}/orders"
+  headers:
+    - name: Content-Type
+      value: application/json
+  body:
+    type: json
+    data: |-
+      {
+        "customer": { "email": "cliente@test.cl", "phone": "+56911111111", "name": "Cliente Test" },
+        "items": [
+          { "productVariantId": "{{variantId}}", "quantity": 2 }
+        ]
+      }
+  auth: inherit
+runtime:
+  scripts:
+    - type: tests
+      code: |-
+        test("returns 200", function() { expect(res.status).to.equal(200); });
+        if (res.status === 200) { bru.setEnvVar("orderId", res.body); }
+settings:
+  encodeUrl: true
+docs: |-
+  # Checkout
+  Coloca un pedido para el tenant activo. Resuelve el comprador (invitado por email),
+  reserva stock o cupo de preventa por línea, calcula el abono, y crea el pedido.
+
+  Guarda el id del pedido en `orderId` para los siguientes requests.
+
+  ## Body
+  - `customer` — `{ email, phone, name? }` (invitado; si el email ya existe, reusa el cliente)
+  - `items[]` — `{ productVariantId, quantity }`
+
+  ## Respuestas
+  - **200** — GUID del pedido
+  - **409** `inventory.insufficient_stock` / `preorder.capacity_exceeded` — sin stock/cupo
+  - **404** `order.variant_not_found` — variante inexistente
+  - **409** `order.no_stock` — variante sin inventario (y sin preventa)
+  - **400** — validación

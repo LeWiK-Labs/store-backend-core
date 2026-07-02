@@ -14,6 +14,7 @@ public sealed class Order : AggregateRoot, ITenantScoped, IAuditable
     public decimal TotalAmount { get; private set; }
     public decimal PaidAmount { get; private set; }
     public decimal DepositDueAmount { get; private set; }   // required to move forward (abono); == total if pay-in-full
+    public DateTime? ReservationExpiresAt { get; private set; }
     public DateTime CreatedAt { get; private set; }
     public DateTime UpdatedAt { get; private set; }
 
@@ -58,6 +59,8 @@ public sealed class Order : AggregateRoot, ITenantScoped, IAuditable
         order.DepositDueAmount = depositDueAmount <= 0 || depositDueAmount >= order.TotalAmount
             ? order.TotalAmount
             : depositDueAmount;
+        
+        order.ReservationExpiresAt = null;
 
         order.Raise(new OrderPlaced(tenantId, order.Id, customerId));
         return order;

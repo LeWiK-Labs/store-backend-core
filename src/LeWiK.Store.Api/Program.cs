@@ -1,5 +1,6 @@
 using LeWiK.Store.Api.Catalog;
 using LeWiK.Store.Api.Inventory;
+using LeWiK.Store.Api.Orders;
 using LeWiK.Store.Api.Preorders;
 using LeWiK.Store.App.Common;
 using LeWiK.Store.App.Common.BackOffice;
@@ -44,6 +45,7 @@ app.MapGet("/health/tenant", (ITenantContext tenant) =>
 app.MapCatalogEndpoints();
 app.MapInventoryEndpoints();
 app.MapPreorderEndpoints();
+app.MapOrderEndpoints();
 
 // TEMPORARY smoke endpoint — remove once entitlement is enforced for real
 app.MapGet("/health/entitlement", async (ITenantContext tenant, IBackOfficeClient backOffice) =>

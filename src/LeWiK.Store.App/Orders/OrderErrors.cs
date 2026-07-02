@@ -25,4 +25,10 @@ public static class OrderErrors
         Error.Conflict("order.fulfill_exceeds_pending", $"Cannot fulfill {qty} of '{sku}'; only {pending} pending.");
     public static Error InvalidTransition(FulfillmentStatus from, string action) =>
         Error.Conflict("order.invalid_transition", $"Cannot '{action}' from status '{from}'.");
+    public static Error VariantNotFound(Guid variantId) =>
+        Error.NotFound("order.variant_not_found", $"Variant {variantId} was not found.");
+    public static Error VariantHasNoStock(Guid variantId) =>
+        Error.Conflict("order.no_stock", $"Variant {variantId} has no inventory to sell from.");
+    public static Error OrderNotFound(Guid orderId) =>
+        Error.NotFound("order.not_found", $"Order {orderId} was not found.");
 }
