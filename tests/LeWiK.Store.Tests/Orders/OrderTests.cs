@@ -5,7 +5,7 @@ namespace LeWiK.Tienda.Tests.Orders;
 public class OrderTests
 {
     private static OrderLineDraft Line(int qty, decimal price, bool preorder = false) =>
-        new(Guid.NewGuid(), $"SKU-{price}", "Item", price, "CLP", qty, preorder);
+        new(Guid.NewGuid(), Guid.NewGuid(), $"SKU-{price}", "Item", price, "CLP", qty, preorder);
 
     private static Order PlaceSimple(decimal price = 10000, int qty = 2, decimal deposit = 0) =>
         Order.Place(Guid.NewGuid(), Guid.NewGuid(), "CLP", [Line(qty, price)], deposit).Value;
@@ -88,7 +88,7 @@ public class OrderTests
     [Fact]
     public void Partial_then_full_line_fulfillment_derives_status()
     {
-        var draftA = new OrderLineDraft(Guid.NewGuid(), "A", "A", 10000, "CLP", 2, false);
+        var draftA = new OrderLineDraft(Guid.NewGuid(), Guid.NewGuid(), "A", "A", 10000, "CLP", 2, false);
         var order = Order.Place(Guid.NewGuid(), Guid.NewGuid(), "CLP", [draftA], 0).Value;
         order.ApplyPayment(20000);
         order.StartPreparing();
