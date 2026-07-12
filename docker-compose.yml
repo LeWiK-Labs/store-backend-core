@@ -6,6 +6,13 @@ services:
       POSTGRES_USER: lewik
       POSTGRES_PASSWORD: lewik_dev
       POSTGRES_DB: lewik_store
+      
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U lewik -d lewik_store" ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    
     ports:
       - "5432:5432"
     volumes:
@@ -16,6 +23,24 @@ services:
     container_name: lewik_store_redis
     ports:
       - "6379:6379"
+    
+  api:
+    profiles: [ "full" ]        # only starts with --profile full (backend devs run the API from the IDE)
+    build: .
+    container_name: lewik_store_api
+    ports:
+      - "5223:8080"           # keeps the front's base URL at localhost:5223
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ConnectionStrings__Default: Host=db;Port=5432;Database=lewik_store;Username=lewik;Password=lewik_dev
+      ConnectionStrings__Redis: redis:6379
+      Cors__AllowedOrigins__0: http://localhost:4200
+      Database__MigrateOnStartup: "true"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
 
 volumes:
   pgdata:

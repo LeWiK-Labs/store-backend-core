@@ -6,6 +6,7 @@ using LeWiK.Store.App.Common;
 using LeWiK.Store.App.Common.BackOffice;
 using LeWiK.Store.App.Common.Persistence;
 using LeWiK.Store.App.Common.Tenancy;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Distributed;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -32,6 +33,15 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 });
 
 var app = builder.Build();
+
+// Apply pending migrations on startup (containerized dev convenience; off by default,
+// enabled via Database__MigrateOnStartup env var in docker-compose only).
+if (app.Configuration.GetValue<bool>("Database:MigrateOnStartup"))
+{
+    using var scope = app.Services.CreateScope();
+    scope.ServiceProvider.GetRequiredService<LeWiK.Store.App.Common.Persistence.StoreDbContext>()
+        .Database.Migrate();
+}
 
 app.UseExceptionHandler();
 app.UseCors("Frontend");
