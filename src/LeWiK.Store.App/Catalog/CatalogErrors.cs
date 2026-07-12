@@ -22,4 +22,6 @@ public static class CatalogErrors
         Error.Conflict("catalog.duplicate_combination", $"Variant '{sku}' duplicates an existing option combination.");
     public static Error NoPurchaseLimit(Guid productId) =>
         Error.NotFound("catalog.no_purchase_limit", $"No purchase limit set for product {productId}.");
+    public static Error ProductNotFound(Guid productId) =>
+        Error.NotFound("catalog.product_not_found", $"Product {productId} was not found.");
 }

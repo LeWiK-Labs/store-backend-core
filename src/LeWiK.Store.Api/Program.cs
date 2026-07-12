@@ -11,6 +11,14 @@ using Microsoft.Extensions.Caching.Distributed;
 var builder = WebApplication.CreateBuilder(args);
 var redisConnection = builder.Configuration.GetConnectionString("Redis");
 
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("Frontend", policy => policy
+        .WithOrigins(builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ?? [])
+        .AllowAnyHeader()
+        .AllowAnyMethod());
+});
+
 builder.Services.AddStoreApp(builder.Configuration.GetConnectionString("Default")!, redisConnection);
 builder.Services.AddExceptionHandler<LeWiK.Store.Api.Common.GlobalExceptionHandler>();
 builder.Services.AddProblemDetails();
@@ -26,6 +34,7 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 var app = builder.Build();
 
 app.UseExceptionHandler();
+app.UseCors("Frontend");
 
 //Middlewares
 app.UseMiddleware<LeWiK.Store.Api.Tenancy.TenantResolutionMiddleware>();

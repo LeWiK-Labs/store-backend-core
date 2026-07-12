@@ -4,6 +4,7 @@ using LeWiK.Store.App.Common.Persistence;
 using LeWiK.Store.App.Common.Results;
 using MediatR;
 using Microsoft.EntityFrameworkCore;
+using System.Linq.Expressions;
 
 namespace LeWiK.Store.App.Catalog;
 
@@ -14,7 +15,8 @@ public sealed record ProductResponse(
     IReadOnlyList<OptionResponse> Options,
     IReadOnlyList<VariantResponse> Variants);
 
-public sealed record OptionResponse(string Name, IReadOnlyList<string> Values);
+public sealed record OptionResponse(string Name, IReadOnlyList<OptionValueResponse> Values);
+public sealed record OptionValueResponse(Guid Id, string Value);
 
 public sealed record VariantResponse(
     Guid Id, string Sku, string Label, decimal PriceAmount, string PriceCurrency,
@@ -27,30 +29,30 @@ public sealed class ListProductsHandler(StoreDbContext db)
     {
         var products = await db.Set<Product>()
             .OrderBy(p => p.Name)
-            .Select(p => new ProductResponse(
-                p.Id,
-                p.Name,
-                p.Description,
-                p.Status.ToString(),
-                // Options ordered by their axis position, values by theirs.
-                p.Options
-                    .OrderBy(o => o.Position)
-                    .Select(o => new OptionResponse(
-                        o.Name,
-                        o.Values.OrderBy(v => v.Position).Select(v => v.Value).ToList()))
-                    .ToList(),
-                // Variants with the ids of the option values they link to.
-                p.Variants
-                    .Select(v => new VariantResponse(
-                        v.Id,
-                        v.Sku,
-                        v.Label,
-                        v.Price.Amount,
-                        v.Price.Currency,
-                        v.OptionValues.Select(ov => ov.ProductOptionValueId).ToList()))
-                    .ToList()))
+            .Select(ProductProjection.ToResponse)
             .ToListAsync(ct);
 
         return products;
     }
+}
+
+internal static class ProductProjection
+{
+    public static readonly Expression<Func<Product, ProductResponse>> ToResponse = p => new ProductResponse(
+        p.Id,
+        p.Name,
+        p.Description,
+        p.Status.ToString(),
+        p.Options
+            .OrderBy(o => o.Position)
+            .Select(o => new OptionResponse(
+                o.Name,
+                o.Values.OrderBy(v => v.Position)
+                    .Select(v => new OptionValueResponse(v.Id, v.Value)).ToList()))
+            .ToList(),
+        p.Variants
+            .Select(v => new VariantResponse(
+                v.Id, v.Sku, v.Label, v.Price.Amount, v.Price.Currency,
+                v.OptionValues.Select(ov => ov.ProductOptionValueId).ToList()))
+            .ToList());
 }

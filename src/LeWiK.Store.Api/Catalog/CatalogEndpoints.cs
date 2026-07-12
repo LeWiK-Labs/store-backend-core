@@ -19,6 +19,9 @@ public static class CatalogEndpoints
 
         group.MapGet("/", async (ISender sender) => (await sender.Send(new ListProductsQuery())).ToHttpResult());
 
+        group.MapGet("/{productId:guid}", async (Guid productId, ISender sender) =>
+            (await sender.Send(new GetProductQuery(productId))).ToHttpResult());
+        
         // Product-level limit (covers all variants)
         var productLimits = app.MapGroup("/products/{productId:guid}/purchase-limit");
         productLimits.MapPut("/", async (Guid productId, PurchaseLimitBody body, ISender sender) =>
