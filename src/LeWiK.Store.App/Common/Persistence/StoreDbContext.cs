@@ -24,6 +24,13 @@ public class StoreDbContext(DbContextOptions<StoreDbContext> options, ITenantCon
 
             if (typeof(ITenantScoped).IsAssignableFrom(entityType.ClrType))
                 ApplyTenantFilterMethod.MakeGenericMethod(entityType.ClrType).Invoke(this, [modelBuilder]);
+
+            // Ids are assigned in the domain (Guid.CreateVersion7()), never by the store.
+            // Without this, EF's "key is set ⇒ row exists" heuristic marks a new child appended
+            // to an already-tracked aggregate (e.g. a StockMovement on a loaded InventoryItem) as
+            // Modified, emitting an UPDATE that hits 0 rows instead of an INSERT.
+            if (typeof(Entity).IsAssignableFrom(entityType.ClrType))
+                modelBuilder.Entity(entityType.ClrType).Property(nameof(Entity.Id)).ValueGeneratedNever();
         }
     }
 
