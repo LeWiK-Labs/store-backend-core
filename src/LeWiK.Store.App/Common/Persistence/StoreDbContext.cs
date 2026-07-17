@@ -1,12 +1,14 @@
 using System.Reflection;
 using LeWiK.Store.App.Common.Domain;
 using LeWiK.Store.App.Common.Tenancy;
+using Microsoft.AspNetCore.DataProtection.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
 
 namespace LeWiK.Store.App.Common.Persistence;
 
-public class StoreDbContext(DbContextOptions<StoreDbContext> options, ITenantContext tenantContext) : DbContext(options)
+public class StoreDbContext(DbContextOptions<StoreDbContext> options, ITenantContext tenantContext) : DbContext(options), IDataProtectionKeyContext
 {
+    public DbSet<DataProtectionKey> DataProtectionKeys => Set<DataProtectionKey>();
     private readonly ITenantContext _tenantContext = tenantContext;
 
     private static readonly MethodInfo ApplyTenantFilterMethod =
