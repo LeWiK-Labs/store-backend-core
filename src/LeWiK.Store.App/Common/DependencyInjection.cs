@@ -45,6 +45,9 @@ public static class DependencyInjection
         services.AddDataProtection().PersistKeysToDbContext<StoreDbContext>();
         services.AddSingleton<Payments.CredentialProtector>();
         
+        services.AddScoped<Payments.IPaymentGatewayClient, Payments.Gateways.TransferGatewayClient>();
+        services.AddScoped<Payments.PaymentGatewayResolver>();
+        
         return services;
     }
 }

@@ -5,7 +5,7 @@ namespace LeWiK.Store.App.Payments;
 
 public sealed record ChargeInitiation(string? RedirectUrl, string? ExternalReference);
 
-public interface IPaymentGateway
+public interface IPaymentGatewayClient
 {
     PaymentGateway Gateway { get; }
 
