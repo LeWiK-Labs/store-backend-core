@@ -31,4 +31,7 @@ public static class OrderErrors
         Error.Conflict("order.no_stock", $"Variant {variantId} has no inventory to sell from.");
     public static Error OrderNotFound(Guid orderId) =>
         Error.NotFound("order.not_found", $"Order {orderId} was not found.");
+    public static Error PreorderStockMissing(string sku) =>
+        Error.Conflict("order.preorder_stock_missing",
+            $"Cannot release '{sku}': its stock has not arrived yet. Add stock for the variant first.");
 }

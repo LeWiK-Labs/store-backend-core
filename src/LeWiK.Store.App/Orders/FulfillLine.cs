@@ -41,16 +41,16 @@ public sealed class FulfillLineHandler(StoreDbContext db)
         var line = order.Lines.FirstOrDefault(l => l.Id == request.OrderLineId);
         if (line is null) return OrderErrors.LineNotFound(request.OrderLineId);
 
-        // Consume the physical reservation for this line's variant.
-        // (Stock lines were reserved at checkout; preorder lines get stock on release —
-        //  simplified here: we consume reserved stock for the fulfilled quantity.)
+        // Every fulfillable line is stock-backed by now: stock lines reserved at checkout,
+        // preorder lines reserved at release. A missing inventory is an inconsistency, not
+        // a case to skip silently.
         var inventory = await db.Set<InventoryItem>()
             .FirstOrDefaultAsync(i => i.ProductVariantId == line.ProductVariantId, ct);
-        if (inventory is not null)
-        {
-            var consume = inventory.Fulfill(request.Quantity);
-            if (consume.IsFailure) return consume.Error;
-        }
+        if (inventory is null)
+            return OrderErrors.VariantHasNoStock(line.ProductVariantId);
+
+        var consume = inventory.Fulfill(request.Quantity);
+        if (consume.IsFailure) return consume.Error;
 
         // The order aggregate updates the line and derives Delivered/PartiallyDelivered.
         var result = order.FulfillLine(request.OrderLineId, request.Quantity);

@@ -21,24 +21,29 @@ public sealed class CancelOrderHandler(StoreDbContext db)
             .FirstOrDefaultAsync(o => o.Id == request.OrderId, ct);
         if (order is null) return OrderErrors.OrderNotFound(request.OrderId);
 
-        // Cancel first (the aggregate guards: can't cancel a delivered order).
+        // Capture BEFORE cancelling: past AwaitingRelease means preorder lines were
+        // already converted to physical stock reservations (see ReleaseOrder).
+        var preordersAlreadyBackedByStock = order.FulfillmentStatus
+            is FulfillmentStatus.Paid or FulfillmentStatus.Preparing or FulfillmentStatus.PartiallyDelivered;
+
         var result = order.Cancel();
         if (result.IsFailure) return result.Error;
 
-        // Release each line's reservation back to stock or preorder capacity.
         foreach (var line in order.Lines)
         {
-            var pending = line.QtyPending; // only what hasn't been handed over
+            var pending = line.QtyPending; // delivered units never come back
             if (pending <= 0) continue;
 
-            if (line.IsPreorder)
+            if (line.IsPreorder && !preordersAlreadyBackedByStock)
             {
+                // Still capacity-backed: give the slot back to the drop.
                 var preorder = await db.Set<Preorder>()
                     .FirstOrDefaultAsync(p => p.ProductVariantId == line.ProductVariantId, ct);
                 preorder?.ReleaseCapacity(pending);
             }
             else
             {
+                // Stock-backed (plain stock line, or a released preorder line).
                 var inventory = await db.Set<InventoryItem>()
                     .FirstOrDefaultAsync(i => i.ProductVariantId == line.ProductVariantId, ct);
                 inventory?.Release(pending);
