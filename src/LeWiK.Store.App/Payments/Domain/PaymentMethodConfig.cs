@@ -3,7 +3,7 @@ using LeWiK.Store.App.Common.Tenancy;
 
 namespace LeWiK.Store.App.Payments.Domain;
 
-public enum PaymentGateway {Transfer, Webpay, MercadoPago}
+public enum PaymentGateway {Transfer, Webpay, MercadoPago, Manual}
 
 public sealed class PaymentMethodConfig : Entity, ITenantScoped, IAuditable
 {
