@@ -1,4 +1,5 @@
 using FluentValidation;
+using LeWiK.Store.App.Catalog.Domain;
 using LeWiK.Store.App.Common.Messaging;
 using LeWiK.Store.App.Common.Persistence;
 using LeWiK.Store.App.Common.Results;
@@ -28,6 +29,14 @@ public sealed class AddStockHandler(StoreDbContext db, ITenantContext tenant) : 
 {
     public async Task<Result<StockLevelResponse>> Handle(AddStockCommand request, CancellationToken ct)
     {
+        // Guard against orphan inventory: the variant must exist in this tenant.
+        // (Pragmatic cross-module read; the cleaner fix is creating inventory from a
+        //  ProductVariantCreated domain event, deferred.)
+        var variantExists = await db.Set<ProductVariant>()
+            .AnyAsync(v => v.Id == request.ProductVariantId, ct);
+        if (!variantExists)
+            return InventoryErrors.VariantNotFound(request.ProductVariantId);
+
         var item = await db.Set<InventoryItem>()
             .FirstOrDefaultAsync(i => i.ProductVariantId == request.ProductVariantId, ct);
 
