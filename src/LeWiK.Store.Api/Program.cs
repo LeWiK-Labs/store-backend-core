@@ -31,6 +31,7 @@ if(!string.IsNullOrWhiteSpace(redisConnection)) signalR.AddStackExchangeRedis(re
 builder.Services.ConfigureHttpJsonOptions(options =>
 {
     options.SerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
+    options.SerializerOptions.Converters.Add(new LeWiK.Store.Api.Common.TrimmedDecimalConverter());
 });
 
 var app = builder.Build();
@@ -54,7 +55,7 @@ app.MapGet("/", () => "Hello World!");
 
 app.MapGet("/health/db", async (StoreDbContext db) =>
     await db.Database.CanConnectAsync()
-        ? Results.Ok("db Ok")
+        ? Results.Ok("db ok")
         : Results.Problem("db Error"));
 
 app.MapGet("/health/tenant", (ITenantContext tenant) =>
