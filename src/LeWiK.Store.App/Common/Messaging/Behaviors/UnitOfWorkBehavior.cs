@@ -15,6 +15,7 @@ public sealed class UnitOfWorkBehavior<TRequest, TResponse>(StoreDbContext db, I
             return response;
 
         await db.SaveChangesAsync(ct);
+        await DispatchDomainEventsAsync(ct);   // ← esta línea faltaba
         return response;
     }
 
