@@ -30,7 +30,12 @@ public sealed class RegisterPaymentHandler(StoreDbContext db, ITenantContext ten
 {
     public async Task<Result<OrderPaymentResponse>> Handle(RegisterPaymentCommand request, CancellationToken ct)
     {
-        var order = await db.Set<Order>().FirstOrDefaultAsync(o => o.Id == request.OrderId, ct);
+        // Load the full aggregate: AdvanceAfterPayment inspects the lines to tell a
+        // preorder order (→ AwaitingRelease) from a stock-only one. Without the lines
+        // a paid preorder is misclassified as stock-only and stranded in PendingPayment.
+        var order = await db.Set<Order>()
+            .Include(o => o.Lines)
+            .FirstOrDefaultAsync(o => o.Id == request.OrderId, ct);
         if (order is null)
             return OrderErrors.OrderNotFound(request.OrderId);
 

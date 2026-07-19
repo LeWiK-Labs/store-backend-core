@@ -26,7 +26,11 @@ public sealed class ConfirmPaymentHandler(StoreDbContext db)
         var markResult = payment.MarkSucceeded(request.ExternalReference);
         if (markResult.IsFailure) return markResult.Error;
 
-        var order = await db.Set<Order>().FirstOrDefaultAsync(o => o.Id == payment.OrderId, ct);
+        // Include the lines: AdvanceAfterPayment (via ApplyPayment) needs them to route a
+        // preorder order to AwaitingRelease instead of treating it as stock-only.
+        var order = await db.Set<Order>()
+            .Include(o => o.Lines)
+            .FirstOrDefaultAsync(o => o.Id == payment.OrderId, ct);
         if (order is null) return OrderErrors.OrderNotFound(payment.OrderId);
 
         // Apply the confirmed amount to the order (advances payment/fulfillment as before).
