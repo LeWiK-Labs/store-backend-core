@@ -2,7 +2,9 @@
 using LeWiK.Store.App.Common.Messaging;
 using LeWiK.Store.App.Common.Persistence;
 using LeWiK.Store.App.Common.Results;
+using LeWiK.Store.App.Common.Tenancy;
 using LeWiK.Store.App.Orders.Domain;
+using LeWiK.Store.App.Payments.Domain;
 using MediatR;
 using Microsoft.EntityFrameworkCore;
 
@@ -23,12 +25,17 @@ public sealed class RegisterPaymentValidator : AbstractValidator<RegisterPayment
     }
 }
 
-public sealed class RegisterPaymentHandler(StoreDbContext db)
+public sealed class RegisterPaymentHandler(StoreDbContext db, ITenantContext tenant)
     : IRequestHandler<RegisterPaymentCommand, Result<OrderPaymentResponse>>
 {
     public async Task<Result<OrderPaymentResponse>> Handle(RegisterPaymentCommand request, CancellationToken ct)
     {
-        var order = await db.Set<Order>().FirstOrDefaultAsync(o => o.Id == request.OrderId, ct);
+        // Load the full aggregate: AdvanceAfterPayment inspects the lines to tell a
+        // preorder order (→ AwaitingRelease) from a stock-only one. Without the lines
+        // a paid preorder is misclassified as stock-only and stranded in PendingPayment.
+        var order = await db.Set<Order>()
+            .Include(o => o.Lines)
+            .FirstOrDefaultAsync(o => o.Id == request.OrderId, ct);
         if (order is null)
             return OrderErrors.OrderNotFound(request.OrderId);
 
@@ -37,6 +44,17 @@ public sealed class RegisterPaymentHandler(StoreDbContext db)
         var result = order.ApplyPayment(request.Amount);
         if (result.IsFailure)
             return result.Error;
+
+        // Manual registrations leave an audit trail too, so every cent shows up in
+        // the payments ledger. Recorded already-resolved (the money is in).
+        var type = order.PaymentStatus != PaymentStatus.Paid ? PaymentType.Deposit
+            : order.PaidAmount == request.Amount ? PaymentType.Full
+            : PaymentType.Balance;
+
+        var payment = new Payment(tenant.TenantId, order.Id, PaymentGateway.Manual,
+            type, request.Amount, order.Currency);
+        payment.MarkSucceeded("manual");
+        db.Add(payment);
 
         return Map(order);
     }

@@ -101,18 +101,29 @@ public sealed class Order : AggregateRoot, ITenantScoped, IAuditable
         AdvanceAfterPayment();
     }
 
-    // When payment clears the required threshold, move fulfillment forward.
+    // Recomputes the pre-preparation stage from the CURRENT payment state.
+    // Runs on every payment, not only the first one (the old early-return on
+    // PendingPayment made a second payment a no-op, stranding the order).
     private void AdvanceAfterPayment()
     {
-        if (FulfillmentStatus != FulfillmentStatus.PendingPayment) return;
-        if (PaymentStatus == PaymentStatus.Pending) return;
+        // Once preparing or beyond, payment no longer drives fulfillment.
+        if (FulfillmentStatus is not (FulfillmentStatus.PendingPayment or FulfillmentStatus.AwaitingRelease))
+            return;
 
-        // Deposit is enough to move a preorder into AwaitingRelease.
-        // Full payment with no preorder lines → ready to prepare (Paid).
-        var hasPreorder = _lines.Any(l => l.IsPreorder);
-        FulfillmentStatus = hasPreorder ? FulfillmentStatus.AwaitingRelease
-            : PaymentStatus == PaymentStatus.Paid ? FulfillmentStatus.Paid
-            : FulfillmentStatus.AwaitingRelease;
+        if (_lines.Any(l => l.IsPreorder))
+        {
+            // Preorder lines wait for stock no matter how much is paid;
+            // MarkReleased is what moves them forward.
+            if (PaymentStatus != PaymentStatus.Pending)
+                FulfillmentStatus = FulfillmentStatus.AwaitingRelease;
+            return;
+        }
+
+        // Stock-only orders never wait for a release: pending until fully paid,
+        // then ready to prepare.
+        FulfillmentStatus = PaymentStatus == PaymentStatus.Paid
+            ? FulfillmentStatus.Paid
+            : FulfillmentStatus.PendingPayment;
     }
 
     // Preorder stock arrived: release for preparation (requires full payment).

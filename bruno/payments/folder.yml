@@ -1,0 +1,3 @@
+﻿info: { name: Payments, type: folder, seq: 5 }
+docs: |-
+  Configuración BYOC de pasarelas y flujo de pago (initiate → confirm). Fase 3.2: transferencia.

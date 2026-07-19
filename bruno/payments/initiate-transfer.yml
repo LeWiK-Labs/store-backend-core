@@ -1,0 +1,34 @@
+﻿info: { name: Initiate Transfer Payment, type: http, seq: 2 }
+http:
+  method: POST
+  url: "{{baseUrl}}/orders/{{orderId}}/payments/initiate"
+  headers:
+    - name: Content-Type
+      value: application/json
+  body:
+    type: json
+    data: |-
+      { "gateway": "Transfer", "type": "Full" }
+  auth: inherit
+runtime:
+  scripts:
+    - type: tests
+      code: |-
+        test("returns 200", function() { expect(res.status).to.equal(200); });
+        if (res.status === 200) { bru.setEnvVar("paymentId", res.body.paymentId); }
+settings: { encodeUrl: true }
+docs: |-
+  # Initiate Transfer Payment
+  El comprador elige pagar por transferencia. Crea un Payment pendiente y devuelve
+  los datos bancarios de la tienda. Guarda `paymentId` para confirmar después.
+
+  ## Body
+  - `gateway` — `Transfer` | `Webpay` | `MercadoPago`
+  - `type` — `Full` (todo el saldo) | `Deposit` (el abono) | `Balance` (saldo restante)
+
+  ## Respuestas
+  - **200** — `{ paymentId, gateway, amount, currency, redirectUrl, bankDetails }`
+    (para transferencia: `bankDetails` con los datos, `redirectUrl` null)
+  - **409** `payment.gateway_not_configured` — la tienda no configuró esa pasarela
+  - **409** `order.already_paid` — no hay saldo que cobrar
+  - **404** `order.not_found`

@@ -1,6 +1,7 @@
 using LeWiK.Store.Api.Catalog;
 using LeWiK.Store.Api.Inventory;
 using LeWiK.Store.Api.Orders;
+using LeWiK.Store.Api.Payments;
 using LeWiK.Store.Api.Preorders;
 using LeWiK.Store.App.Common;
 using LeWiK.Store.App.Common.BackOffice;
@@ -30,6 +31,7 @@ if(!string.IsNullOrWhiteSpace(redisConnection)) signalR.AddStackExchangeRedis(re
 builder.Services.ConfigureHttpJsonOptions(options =>
 {
     options.SerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
+    options.SerializerOptions.Converters.Add(new LeWiK.Store.Api.Common.TrimmedDecimalConverter());
 });
 
 var app = builder.Build();
@@ -53,7 +55,7 @@ app.MapGet("/", () => "Hello World!");
 
 app.MapGet("/health/db", async (StoreDbContext db) =>
     await db.Database.CanConnectAsync()
-        ? Results.Ok("db Ok")
+        ? Results.Ok("db ok")
         : Results.Problem("db Error"));
 
 app.MapGet("/health/tenant", (ITenantContext tenant) =>
@@ -65,6 +67,7 @@ app.MapCatalogEndpoints();
 app.MapInventoryEndpoints();
 app.MapPreorderEndpoints();
 app.MapOrderEndpoints();
+app.MapPaymentEndpoints();
 
 // TEMPORARY smoke endpoint — remove once entitlement is enforced for real
 app.MapGet("/health/entitlement", async (ITenantContext tenant, IBackOfficeClient backOffice) =>

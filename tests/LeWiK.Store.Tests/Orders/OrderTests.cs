@@ -126,4 +126,33 @@ public class OrderTests
         var result = order.StartPreparing();
         Assert.True(result.IsFailure); // not in Paid status
     }
+
+    [Fact]
+    public void Stock_only_order_with_partial_then_full_payment_ends_ready_to_prepare()
+    {
+        var order = PlaceSimple(price: 10000, qty: 2); // total 20000
+
+        order.ApplyPayment(5000);
+        Assert.Equal(PaymentStatus.Deposited, order.PaymentStatus);
+        Assert.Equal(FulfillmentStatus.PendingPayment, order.FulfillmentStatus); // never AwaitingRelease
+
+        order.ApplyPayment(15000);
+        Assert.Equal(PaymentStatus.Paid, order.PaymentStatus);
+        Assert.Equal(FulfillmentStatus.Paid, order.FulfillmentStatus);
+        Assert.True(order.StartPreparing().IsSuccess);
+    }
+
+    [Fact]
+    public void Preorder_order_stays_awaiting_release_even_when_fully_paid()
+    {
+        var order = Order.Place(Guid.NewGuid(), Guid.NewGuid(), "CLP", [Line(2, 10000, preorder: true)], 6000).Value;
+
+        order.ApplyPayment(6000);
+        Assert.Equal(FulfillmentStatus.AwaitingRelease, order.FulfillmentStatus);
+
+        order.ApplyPayment(14000);
+        Assert.Equal(PaymentStatus.Paid, order.PaymentStatus);
+        Assert.Equal(FulfillmentStatus.AwaitingRelease, order.FulfillmentStatus); // release is explicit
+        Assert.True(order.MarkReleased().IsSuccess);
+    }
 }

@@ -1,0 +1,29 @@
+﻿info: { name: Configure Transfer, type: http, seq: 1 }
+http:
+  method: PUT
+  url: "{{baseUrl}}/payment-methods/Transfer"
+  headers:
+    - name: Content-Type
+      value: application/json
+  body:
+    type: json
+    data: |-
+      {
+        "credentialsJson": "{\"banco\":\"Banco Estado\",\"tipoCuenta\":\"Cuenta Corriente\",\"numero\":\"123456789\",\"rut\":\"76.543.210-K\",\"titular\":\"TCG Store SpA\",\"email\":\"pagos@tienda.cl\"}"
+      }
+  auth: inherit
+runtime:
+  scripts:
+    - type: tests
+      code: |-
+        test("returns 200", function() { expect(res.status).to.equal(200); });
+settings: { encodeUrl: true }
+docs: |-
+  # Configure Transfer (BYOC)
+  Guarda los datos bancarios de la tienda (encriptados). Para transferencia, las
+  "credenciales" son los datos que el comprador necesita para transferir.
+
+  `credentialsJson` es un string JSON libre (el shape lo define la tienda).
+
+  ## Respuestas
+  - **200** — `{ gateway, isActive }` (nunca devuelve las credenciales)

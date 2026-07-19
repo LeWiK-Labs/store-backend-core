@@ -11,4 +11,7 @@ public static class InventoryErrors
         Error.Conflict("inventory.insufficient_reserved", $"Requested: {requested} but only {reserved} reserved.");
     
     public static Error NoInventory(Guid productVariantId) => Error.NotFound("inventory.not_found", $"No inventory for variant {productVariantId}.");
+
+    public static Error VariantNotFound(Guid productVariantId) =>
+        Error.NotFound("inventory.variant_not_found", $"Variant {productVariantId} was not found.");
 }

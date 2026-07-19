@@ -1,0 +1,27 @@
+﻿info: { name: Confirm Payment, type: http, seq: 3 }
+http:
+  method: POST
+  url: "{{baseUrl}}/payments/{{paymentId}}/confirm"
+  headers:
+    - name: Content-Type
+      value: application/json
+  body:
+    type: json
+    data: |-
+      { "externalReference": "TRANSFER-2026-001" }
+  auth: inherit
+runtime:
+  scripts:
+    - type: tests
+      code: |-
+        test("returns 200", function() { expect(res.status).to.equal(200); });
+settings: { encodeUrl: true }
+docs: |-
+  # Confirm Payment
+  La tienda confirma que recibió la transferencia. Cierra el Payment y aplica el
+  monto al pedido. **Idempotente**: confirmar dos veces no aplica plata dos veces.
+
+  ## Respuestas
+  - **200** — `{ paymentId, paymentState, orderId, orderPaymentStatus, orderBalance }`
+  - **409** `payment.already_resolved` — ya confirmado (idempotencia)
+  - **404** `payment.not_found`

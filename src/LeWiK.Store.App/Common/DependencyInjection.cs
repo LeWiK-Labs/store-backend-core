@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using LeWiK.Store.App.Common.Persistence;
 using LeWiK.Store.App.Common.Tenancy;
+using Microsoft.AspNetCore.DataProtection;
 
 namespace LeWiK.Store.App.Common;
 
@@ -40,6 +41,12 @@ public static class DependencyInjection
         if (!string.IsNullOrEmpty(redisConnectionString))
             services.AddStackExchangeRedisCache(o => o.Configuration = redisConnectionString);
         else services.AddDistributedMemoryCache();
+        
+        services.AddDataProtection().PersistKeysToDbContext<StoreDbContext>();
+        services.AddSingleton<Payments.CredentialProtector>();
+        
+        services.AddScoped<Payments.IPaymentGatewayClient, Payments.Gateways.TransferGatewayClient>();
+        services.AddScoped<Payments.PaymentGatewayResolver>();
         
         return services;
     }
