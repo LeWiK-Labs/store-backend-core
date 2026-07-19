@@ -22,7 +22,18 @@ public sealed class GlobalExceptionHandler(ILogger<GlobalExceptionHandler> logge
             case MissingTenantException:
                 await Results.Problem(statusCode: StatusCodes.Status400BadRequest, title: "No tenant resolved").ExecuteAsync(context);
                 return true;
-            
+
+            case Microsoft.AspNetCore.Http.BadHttpRequestException:
+            case System.Text.Json.JsonException:
+                // Malformed JSON, wrong field types, invalid enum values, bad encoding.
+                // Detail is generic on purpose: the raw exception can leak model structure.
+                await Results.Problem(
+                        statusCode: StatusCodes.Status400BadRequest,
+                        title: "request.invalid_body",
+                        detail: "The request body could not be read. Check JSON syntax, field types and enum values.")
+                    .ExecuteAsync(context);
+                return true;
+
             default:
                 logger.LogError(exception, "Unhandled exception");
                 await Results.Problem(
