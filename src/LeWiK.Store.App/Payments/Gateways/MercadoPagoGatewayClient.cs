@@ -15,34 +15,13 @@ public sealed class MercadoPagoGatewayClient : IPaymentGatewayClient
     public PaymentGateway Gateway => PaymentGateway.MercadoPago;
 
     public async Task<Result<ChargeInitiation>> InitiateAsync(
-        Payment payment, string decryptedCredentialsJson, string returnUrl, CancellationToken ct)
+        Payment payment, string decryptedCredentialsJson, ChargeContext context, CancellationToken ct)
     {
         var creds = Parse(decryptedCredentialsJson);
         if (creds is null)
             return PaymentErrors.InvalidCredentials(PaymentGateway.MercadoPago);
 
-        var request = new PreferenceRequest
-        {
-            Items =
-            [
-                new PreferenceItemRequest
-                {
-                    Title = $"Pedido {payment.OrderId}",
-                    Quantity = 1,
-                    CurrencyId = payment.Currency,
-                    UnitPrice = NormalizeAmount(payment.Amount, payment.Currency),
-                }
-            ],
-            // Our Payment id travels here and comes back when we query the payment:
-            // it's how the webhook finds this record.
-            ExternalReference = payment.Id.ToString(),
-            // returnUrl carries the tenant; MP calls it back server-to-server.
-            NotificationUrl = returnUrl,
-            BackUrls = new PreferenceBackUrlsRequest
-            {
-                Success = returnUrl, Pending = returnUrl, Failure = returnUrl,
-            },
-        };
+        var request = BuildPreference(payment, context);
 
         try
         {
@@ -61,6 +40,36 @@ public sealed class MercadoPagoGatewayClient : IPaymentGatewayClient
             return PaymentErrors.GatewayFailure(PaymentGateway.MercadoPago, ex.Message);
         }
     }
+
+    // Separated from the call so the wiring can be asserted without MP credentials: which URL
+    // each channel gets is exactly what went wrong once, and it is invisible from the outside.
+    internal static PreferenceRequest BuildPreference(Payment payment, ChargeContext context) => new()
+    {
+        Items =
+        [
+            new PreferenceItemRequest
+            {
+                Title = $"Pedido {payment.OrderId}",
+                Quantity = 1,
+                CurrencyId = payment.Currency,
+                UnitPrice = NormalizeAmount(payment.Amount, payment.Currency),
+            }
+        ],
+        // Our Payment id travels here and comes back when we query the payment:
+        // it's how the webhook finds this record.
+        ExternalReference = payment.Id.ToString(),
+        // Machine channel: carries the tenant, MP calls it back server-to-server.
+        NotificationUrl = context.CallbackUrl,
+        // Human channel: MP sends the BUYER's browser here. It must be a page, not the
+        // webhook — that endpoint only speaks POST and would greet them with a 405.
+        // Purely cosmetic: the payment is settled by the notification, not by this redirect.
+        BackUrls = new PreferenceBackUrlsRequest
+        {
+            Success = context.StorefrontResultUrl,
+            Pending = context.StorefrontResultUrl,
+            Failure = context.StorefrontResultUrl,
+        },
+    };
 
     // Queries a payment by MP's id (from the webhook) to learn its real status.
     // Never trust the webhook body alone — it only carries an id.

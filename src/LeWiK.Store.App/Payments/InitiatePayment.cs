@@ -57,15 +57,16 @@ public sealed class InitiatePaymentHandler(
         db.Add(payment);
 
         var baseUrl = settings.Value.ReturnUrlBase.TrimEnd('/');
-        var returnUrl = request.Gateway switch
+        var callbackUrl = request.Gateway switch
         {
             // MP calls this back server-to-server with no headers: the tenant rides in the path.
             PaymentGateway.MercadoPago => $"{baseUrl}/payments/mercadopago/webhook/{tenant.TenantId}",
             PaymentGateway.Webpay => $"{baseUrl}/payments/webpay/return",
             _ => "",
         };
+        var context = new ChargeContext(callbackUrl, settings.Value.StorefrontResultUrl);
 
-        var initiation = await client.InitiateAsync(payment, credentials, returnUrl, ct);
+        var initiation = await client.InitiateAsync(payment, credentials, context, ct);
         if (initiation.IsFailure) return initiation.Error;
 
         // Gateways return their own reference (Webpay's token); it's how the return

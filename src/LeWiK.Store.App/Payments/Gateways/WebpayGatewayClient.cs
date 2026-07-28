@@ -13,7 +13,7 @@ public sealed class WebpayGatewayClient : IPaymentGatewayClient
     public PaymentGateway Gateway => PaymentGateway.Webpay;
 
     public Task<Result<ChargeInitiation>> InitiateAsync(
-        Payment payment, string decryptedCredentialsJson, string returnUrl, CancellationToken ct)
+        Payment payment, string decryptedCredentialsJson, ChargeContext context, CancellationToken ct)
     {
         var creds = Parse(decryptedCredentialsJson);
         if (creds is null)
@@ -31,7 +31,9 @@ public sealed class WebpayGatewayClient : IPaymentGatewayClient
                 buyOrder: ShortId(payment.Id),      // Webpay caps buyOrder at 26 chars
                 sessionId: ShortId(payment.OrderId),
                 amount: (int)Math.Round(payment.Amount, MidpointRounding.AwayFromZero), // CLP has no cents
-                returnUrl: returnUrl);
+                // Transbank redirects the buyer's BROWSER here; our return endpoint takes it
+                // from there and forwards them to the storefront result page.
+                returnUrl: context.CallbackUrl);
 
             return Task.FromResult<Result<ChargeInitiation>>(
                 new ChargeInitiation(RedirectUrl: response.Url, ExternalReference: response.Token));

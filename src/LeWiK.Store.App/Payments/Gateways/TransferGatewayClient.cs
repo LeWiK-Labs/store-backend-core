@@ -7,7 +7,7 @@ public sealed class TransferGatewayClient : IPaymentGatewayClient
 {
     public PaymentGateway Gateway => PaymentGateway.Transfer;
 
-    public Task<Result<ChargeInitiation>> InitiateAsync(Payment payment, string decryptedCredentialsJson, string returnUrl, CancellationToken ct)
+    public Task<Result<ChargeInitiation>> InitiateAsync(Payment payment, string decryptedCredentialsJson, ChargeContext context, CancellationToken ct)
     {
         return Task.FromResult<Result<ChargeInitiation>>(new ChargeInitiation(RedirectUrl: null,
             ExternalReference: null));
