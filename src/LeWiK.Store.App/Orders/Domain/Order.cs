@@ -16,6 +16,13 @@ public sealed class Order : AggregateRoot, ITenantScoped, IAuditable
     public decimal RefundedAmount { get; private set; }     // separate axis; see ApplyRefund
     public decimal DepositDueAmount { get; private set; }   // required to move forward (abono); == total if pay-in-full
     public DateTime? ReservationExpiresAt { get; private set; }
+
+    // Opaque single-purpose link so a guest can pay their balance without an account.
+    // Only the HASH lives here: reading the database gives you no working payment links.
+    // The consequence is deliberate — the raw token is shown once, at issue time, and a lost
+    // link is reissued rather than re-read.
+    public string? PaymentLinkHash { get; private set; }
+    public DateTime? PaymentLinkExpiresAt { get; private set; }
     public DateTime CreatedAt { get; private set; }
     public DateTime UpdatedAt { get; private set; }
 
@@ -190,6 +197,28 @@ public sealed class Order : AggregateRoot, ITenantScoped, IAuditable
             Raise(new OrderDelivered(TenantId, Id, CustomerId));
         return Result.Success();
     }
+
+    // ---- Guest payment link ----
+    // Issuing a new link overwrites the old hash, so the previous link stops resolving.
+    // Revocation comes free with reissue rather than needing its own bookkeeping.
+    public void SetPaymentLink(string tokenHash, DateTime expiresAt)
+    {
+        PaymentLinkHash = tokenHash;
+        PaymentLinkExpiresAt = expiresAt;
+    }
+
+    public void RevokePaymentLink()
+    {
+        PaymentLinkHash = null;
+        PaymentLinkExpiresAt = null;
+    }
+
+    // A cancelled order is excluded here rather than only at issue time: the order can be
+    // cancelled AFTER the link was sent, and the link is already sitting in someone's chat.
+    public bool IsPaymentLinkValid(DateTime now) =>
+        PaymentLinkHash is not null
+        && PaymentLinkExpiresAt > now
+        && FulfillmentStatus != FulfillmentStatus.Cancelled;
 
     // ---- Cancellation ----
     public Result Cancel()

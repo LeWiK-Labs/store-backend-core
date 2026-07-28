@@ -452,6 +452,96 @@ assert_eq 12c.8d "queda cancelado y con netPaid 0" "0" "$(jqnum '.netPaid')"
 assert_eq 12c.8e "fulfillment Cancelled" "Cancelled" "$(jqr '.fulfillmentStatus')"
 
 # =============================================================================
+# El comprador abonó y quedó debiendo el saldo, pero es un invitado: no tiene
+# cuenta y no se le va a pedir que se registre. La tienda le manda un link por
+# WhatsApp y con eso paga. Lo que se ejercita acá es que el backend resuelva la
+# tienda correcta a partir del token, SIN header de tenant y sin auth.
+#
+# Se usa un pedido de stock con pago parcial en vez de una preventa: deja el
+# mismo estado (Deposited + saldo pendiente) sin acoplar la sección al cupo del
+# drop, y lo que se prueba es el link, no la mecánica de preventa (sección 10).
+section "12d · Link de pago para invitados"
+st=$(checkout "link-$RUN@test.cl" "$VAR_SIMPLE" 1); LO="$(jqr '.')"
+req POST "/orders/$LO/payments" '{"amount":50000}' >/dev/null
+assert_eq 12d.0a "abono parcial -> Deposited" "Deposited" "$(jqr '.paymentStatus')"
+req GET "/orders/$LO" >/dev/null
+assert_eq 12d.0b "queda saldo" "100000" "$(jqnum '.balance')"
+
+st=$(req POST "/orders/$LO/payment-link" '{"validForDays":15}')
+assert_status 12d.1a "la tienda genera el link" 200 "$st"
+LINK_URL="$(jqr '.url')"; LTOKEN="${LINK_URL##*/}"
+assert_eq 12d.1b "balance en la respuesta" "100000" "$(jqnum '.balance')"
+[ -n "$(jqr '.expiresAt')" ] && ok 12d.1c "trae expiresAt" || ko 12d.1c "sin expiresAt"
+case "$LINK_URL" in http://localhost:4200/pagar/*) ok 12d.1d "url sobre la base configurada";;
+  *) ko 12d.1d "url inesperada: $LINK_URL";; esac
+[ "${#LTOKEN}" = "43" ] && ok 12d.1e "token de 43 chars (32 bytes base64url)" \
+  || ko 12d.1e "largo de token inesperado: ${#LTOKEN}"
+
+# El invitado abre el link: sin X-Tenant-Id y sin auth. El tenant sale del token.
+st=$(req GET "/pay/$LTOKEN" "" "")
+assert_status 12d.2a "abrir el link SIN header de tenant" 200 "$st"
+assert_eq 12d.2b "ve su saldo" "100000" "$(jqnum '.balance')"
+assert_eq 12d.2c "ve el total" "150000" "$(jqnum '.total')"
+assert_eq 12d.2d "ve lo abonado" "50000" "$(jqnum '.paid')"
+assert_eq 12d.2e "ve sus líneas" "1" "$(jqr '.lines | length')"
+# Respuesta recortada a propósito: el que tiene el link no está autenticado.
+assert_eq 12d.2f "no expone el customerId" "null" "$(jqr '.customerId')"
+assert_eq 12d.2g "no expone fulfillmentStatus" "null" "$(jqr '.fulfillmentStatus')"
+# El token manda sobre el header: aunque llegue el tenant equivocado, resuelve el suyo.
+st=$(req GET "/pay/$LTOKEN" "" "$TB")
+assert_eq 12d.2h "el token gana sobre un header ajeno" "100000" "$(jqnum '.balance')"
+
+st=$(req GET "/pay/token-inventado" "" "")
+assert_title 12d.3a "token inexistente" 404 "order.payment_link_invalid" "$st"
+st=$(req POST "/pay/token-inventado/initiate" '{"gateway":"Transfer"}' "")
+assert_title 12d.3b "initiate con token inexistente" 404 "order.payment_link_invalid" "$st"
+
+# Paga el saldo por transferencia, siempre sin identificarse.
+st=$(req POST "/pay/$LTOKEN/initiate" '{"gateway":"Transfer"}' "")
+assert_status 12d.4a "initiate por el link" 200 "$st"
+LPID="$(jqr '.paymentId')"
+assert_eq 12d.4b "cobra el saldo exacto" "100000" "$(jqnum '.amount')"
+[ "$(jqr '.bankDetails')" != "null" ] && ok 12d.4c "bankDetails para el invitado" || ko 12d.4c "sin bankDetails"
+
+st=$(req POST "/payments/$LPID/confirm" '{"externalReference":"TRF-LINK"}')
+assert_eq 12d.5a "la tienda confirma -> Paid" "Paid" "$(jqr '.orderPaymentStatus')"
+assert_eq 12d.5b "saldo 0" "0" "$(jqnum '.orderBalance')"
+
+# Y acá se prueba que los domain events se despachan de verdad: nadie llamó a
+# revocar, lo hizo el handler de OrderPaid. Si el link siguiera vivo, el dispatch
+# no está funcionando.
+st=$(req GET "/pay/$LTOKEN" "" "")
+assert_title 12d.6 "link revocado al quedar pagado (OrderPaid despachado)" 404 "order.payment_link_invalid" "$st"
+st=$(req POST "/orders/$LO/payment-link" '{}')
+assert_title 12d.7 "no se genera link sin saldo" 409 "order.nothing_to_pay" "$st"
+
+# Regenerar invalida el anterior: es la revocación, y sale gratis por guardar el hash.
+st=$(checkout "link2-$RUN@test.cl" "$VAR_SIMPLE" 1); LO2="$(jqr '.')"
+req POST "/orders/$LO2/payments" '{"amount":50000}' >/dev/null
+req POST "/orders/$LO2/payment-link" '{}' >/dev/null; T_OLD="$(jqr '.url')"; T_OLD="${T_OLD##*/}"
+req POST "/orders/$LO2/payment-link" '{}' >/dev/null; T_NEW="$(jqr '.url')"; T_NEW="${T_NEW##*/}"
+[ "$T_OLD" != "$T_NEW" ] && ok 12d.8a "el token nuevo es distinto" || ko 12d.8a "mismo token dos veces"
+st=$(req GET "/pay/$T_OLD" "" ""); assert_title 12d.8b "el token viejo deja de servir" 404 "order.payment_link_invalid" "$st"
+st=$(req GET "/pay/$T_NEW" "" ""); assert_status 12d.8c "el token nuevo sirve" 200 "$st"
+
+# Un pedido puede cancelarse DESPUÉS de mandar el link, y el link ya está en el
+# chat del comprador. Sin esto se le podría cobrar un pedido muerto.
+st=$(req POST "/orders/$LO2/cancel"); assert_status 12d.9a "cancelar el pedido" 200 "$st"
+st=$(req GET "/pay/$T_NEW" "" "")
+assert_title 12d.9b "el link deja de servir al cancelar" 404 "order.payment_link_invalid" "$st"
+st=$(req POST "/pay/$T_NEW/initiate" '{"gateway":"Transfer"}' "")
+assert_title 12d.9c "tampoco se puede pagar" 404 "order.payment_link_invalid" "$st"
+st=$(req POST "/orders/$LO2/payment-link" '{}')
+assert_title 12d.9d "no se genera link para un cancelado" 409 "order.cancelled" "$st"
+
+st=$(req POST "/orders/00000000-0000-0000-0000-000000000001/payment-link" '{}')
+assert_title 12d.10a "pedido inexistente" 404 "order.not_found" "$st"
+st=$(req POST "/orders/$LO/payment-link" '{"validForDays":0}')
+assert_status 12d.10b "validForDays 0" 400 "$st"
+st=$(req POST "/orders/$LO/payment-link" '{"validForDays":9999}')
+assert_status 12d.10c "validForDays fuera de rango" 400 "$st"
+
+# =============================================================================
 # Mercado Pago se confirma por webhook, no por el navegador. Un e2e real necesita
 # credenciales de una cuenta MP y un túnel público (MP no alcanza localhost), así
 # que acá se cubre todo lo que NO depende de eso: los errores de initiate y el

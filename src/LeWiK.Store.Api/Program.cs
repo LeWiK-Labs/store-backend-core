@@ -68,6 +68,7 @@ app.MapInventoryEndpoints();
 app.MapPreorderEndpoints();
 app.MapOrderEndpoints();
 app.MapPaymentEndpoints();
+app.MapPaymentLinkEndpoints();
 
 // TEMPORARY smoke endpoint — remove once entitlement is enforced for real
 app.MapGet("/health/entitlement", async (ITenantContext tenant, IBackOfficeClient backOffice) =>

@@ -26,6 +26,12 @@ internal sealed class OrderConfiguration : IEntityTypeConfiguration<Order>
         builder.Property(o => o.DepositDueAmount).HasPrecision(14, 4).IsRequired();
         builder.Property(o => o.ReservationExpiresAt);
 
+        // SHA-256 hex = 64 chars. The public lookup arrives with no tenant and no order id,
+        // so this index is the only thing standing between a link click and a full scan.
+        builder.Property(o => o.PaymentLinkHash).HasMaxLength(64).IsRequired(false);
+        builder.HasIndex(o => o.PaymentLinkHash);
+        builder.Property(o => o.PaymentLinkExpiresAt).IsRequired(false);
+
         builder.Property(o => o.CreatedAt).IsRequired();
         builder.Property(o => o.UpdatedAt).IsRequired();
 

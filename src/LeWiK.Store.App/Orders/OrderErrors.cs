@@ -31,6 +31,10 @@ public static class OrderErrors
         Error.NotFound("order.variant_not_found", $"Variant {variantId} was not found.");
     public static Error VariantHasNoStock(Guid variantId) =>
         Error.Conflict("order.no_stock", $"Variant {variantId} has no inventory to sell from.");
+    public static Error PaymentLinkInvalid() =>
+        Error.NotFound("order.payment_link_invalid", "This payment link is invalid or has expired.");
+    public static Error NothingToPay() =>
+        Error.Conflict("order.nothing_to_pay", "This order has no pending balance.");
     public static Error OrderNotFound(Guid orderId) =>
         Error.NotFound("order.not_found", $"Order {orderId} was not found.");
     public static Error PreorderStockMissing(string sku) =>

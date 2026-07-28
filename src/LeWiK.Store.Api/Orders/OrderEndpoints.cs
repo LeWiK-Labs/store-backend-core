@@ -37,9 +37,15 @@ public static class OrderEndpoints
         group.MapPost("/{orderId:guid}/cancel", async (Guid orderId, ISender sender) =>
             (await sender.Send(new CancelOrderCommand(orderId))).ToHttpResult());
 
+// Store: issue a guest payment link for the balance. The URL comes back ONCE — it is
+// stored hashed, so it can never be read again, only reissued.
+        group.MapPost("/{orderId:guid}/payment-link", async (Guid orderId, PaymentLinkBody? body, ISender sender) =>
+            (await sender.Send(new CreatePaymentLinkCommand(orderId, body?.ValidForDays))).ToHttpResult());
+
         return app;
     }
 }
 
 public sealed record RegisterPaymentBody(decimal Amount);
+public sealed record PaymentLinkBody(int? ValidForDays);
 public sealed record FulfillLineBody(int Quantity);
