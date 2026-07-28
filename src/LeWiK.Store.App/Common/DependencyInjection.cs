@@ -2,6 +2,7 @@ using FluentValidation;
 using LeWiK.Store.App.Common.BackOffice;
 using LeWiK.Store.App.Common.Messaging.Behaviors;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using LeWiK.Store.App.Common.Persistence;
 using LeWiK.Store.App.Common.Tenancy;
@@ -11,7 +12,11 @@ namespace LeWiK.Store.App.Common;
 
 public static class DependencyInjection
 {
-    public static IServiceCollection AddStoreApp(this IServiceCollection services, string connectionString, string? redisConnectionString = null)
+    public static IServiceCollection AddStoreApp(
+        this IServiceCollection services,
+        string connectionString,
+        string? redisConnectionString = null,
+        IConfiguration? configuration = null)
     {
         //Tenancy
         services.AddScoped<TenantContext>();
@@ -46,8 +51,12 @@ public static class DependencyInjection
         services.AddSingleton<Payments.CredentialProtector>();
         
         services.AddScoped<Payments.IPaymentGatewayClient, Payments.Gateways.TransferGatewayClient>();
+        services.AddScoped<Payments.IPaymentGatewayClient, Payments.Gateways.WebpayGatewayClient>();
         services.AddScoped<Payments.PaymentGatewayResolver>();
-        
+
+        services.Configure<Payments.PaymentSettings>(o =>
+            configuration?.GetSection("Payments").Bind(o));
+
         return services;
     }
 }

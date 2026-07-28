@@ -21,7 +21,7 @@ builder.Services.AddCors(options =>
         .AllowAnyMethod());
 });
 
-builder.Services.AddStoreApp(builder.Configuration.GetConnectionString("Default")!, redisConnection);
+builder.Services.AddStoreApp(builder.Configuration.GetConnectionString("Default")!, redisConnection, builder.Configuration);
 builder.Services.AddExceptionHandler<LeWiK.Store.Api.Common.GlobalExceptionHandler>();
 builder.Services.AddProblemDetails();
 

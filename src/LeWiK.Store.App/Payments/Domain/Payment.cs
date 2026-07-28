@@ -37,6 +37,13 @@ public sealed class Payment : Entity, ITenantScoped, IAuditable
         ExternalReference = externalReference;
     }
 
+    // Set while still Pending: gateways return their reference when the charge starts.
+    public void SetExternalReference(string reference)
+    {
+        if (State == PaymentState.Pending)
+            ExternalReference = reference;
+    }
+
     public Result MarkSucceeded(string? externalReference = null)
     {
         if (State != PaymentState.Pending)

@@ -8,13 +8,16 @@ using LeWiK.Store.App.Orders.Domain;
 using LeWiK.Store.App.Payments.Domain;
 using MediatR;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace LeWiK.Store.App.Payments;
 
 public sealed record InitiatePaymentCommand(Guid OrderId, PaymentGateway Gateway, PaymentType Type)
     : ICommand<PaymentInitiationResponse>;
 
-public sealed record PaymentInitiationResponse(Guid PaymentId, string Gateway, decimal Amount, string Currency, string? RedirectUrl, string? BankDetails);
+public sealed record PaymentInitiationResponse(
+    Guid PaymentId, string Gateway, decimal Amount, string Currency,
+    string? RedirectUrl, string? RedirectToken, string? BankDetails);
 
 public sealed class InitiatePaymentValidator : AbstractValidator<InitiatePaymentCommand>
 {
@@ -25,7 +28,8 @@ public sealed class InitiatePaymentValidator : AbstractValidator<InitiatePayment
 }
 
 public sealed class InitiatePaymentHandler(
-    StoreDbContext db, ITenantContext tenant, CredentialProtector protector, PaymentGatewayResolver resolver)
+    StoreDbContext db, ITenantContext tenant, CredentialProtector protector,
+    PaymentGatewayResolver resolver, IOptions<PaymentSettings> settings)
     : IRequestHandler<InitiatePaymentCommand, Result<PaymentInitiationResponse>>
 {
     public async Task<Result<PaymentInitiationResponse>> Handle(InitiatePaymentCommand request, CancellationToken ct)
@@ -52,14 +56,21 @@ public sealed class InitiatePaymentHandler(
         var payment = new Payment(tenant.TenantId, order.Id, request.Gateway, request.Type, amount, order.Currency);
         db.Add(payment);
 
-        var initiation = await client.InitiateAsync(payment, credentials, returnUrl: "", ct);
+        var returnUrl = $"{settings.Value.ReturnUrlBase.TrimEnd('/')}/payments/webpay/return";
+
+        var initiation = await client.InitiateAsync(payment, credentials, returnUrl, ct);
         if (initiation.IsFailure) return initiation.Error;
+
+        // Gateways return their own reference (Webpay's token); it's how the return
+        // endpoint finds this payment later.
+        if (!string.IsNullOrWhiteSpace(initiation.Value.ExternalReference))
+            payment.SetExternalReference(initiation.Value.ExternalReference);
 
         // For transfer, expose the store's bank details (the decrypted config) to the buyer.
         var bankDetails = request.Gateway == PaymentGateway.Transfer ? credentials : null;
 
         return new PaymentInitiationResponse(
             payment.Id, payment.Gateway.ToString(), amount, order.Currency,
-            initiation.Value.RedirectUrl, bankDetails);
+            initiation.Value.RedirectUrl, initiation.Value.ExternalReference, bankDetails);
     }
 }
