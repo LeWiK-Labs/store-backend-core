@@ -14,6 +14,15 @@
 # Idempotente: usa un sufijo único por corrida ($RUN) en emails y SKUs, así que
 # no requiere base limpia. Sale con código != 0 si alguna aserción "dura" falla.
 # Las ZONAS DE RIESGO conocidas se reportan como WARN (no rompen el build).
+#
+# Las pruebas que afirman "pasarela sin configurar" corren sobre TENANTS EFÍMEROS
+# (GUID nuevo por corrida): las credenciales viven en la base y sobreviven entre
+# corridas, así que sobre $TA la aserción se rompía apenas alguien configuraba
+# Webpay de verdad. Contrapartida: cada corrida deja un tenant descartable con una
+# config de MercadoPago de juguete. Para limpiarlos en la base de desarrollo:
+#   DELETE FROM payment_method_configs
+#    WHERE tenant_id NOT IN ('11111111-1111-1111-1111-111111111111',
+#                            '22222222-2222-2222-2222-222222222222');
 # =============================================================================
 set -u
 
@@ -56,6 +65,16 @@ assert_status() { if [ "$3" = "$4" ]; then ok "$1" "$2 (HTTP $4)"; else ko "$1" 
 assert_title() { local t; t="$(jqr '.title')"; if [ "$3" = "$5" ] && [ "$4" = "$t" ]; then ok "$1" "$2 ($t)"; else ko "$1" "$2 — esperado $3/$4, obtenido $5/$t"; fi; }
 # assert_eq ID DESC EXPECTED ACTUAL
 assert_eq() { if [ "$3" = "$4" ]; then ok "$1" "$2"; else ko "$1" "$2 — esperado '$3' obtenido '$4'"; fi; }
+
+# GUID v4 aleatorio, sin depender de uuidgen ni python.
+# Sirve para pruebas que necesitan un tenant que NADIE configuró todavía: las
+# credenciales de pasarela viven en la base y sobreviven entre corridas, así que
+# afirmar "gateway sin configurar" sobre $TA depende de qué haya hecho antes el
+# que corrió el script (o el que probó Webpay a mano).
+guid() {
+  local h; h="$(od -An -tx1 -N16 /dev/urandom | tr -d ' \n')"
+  printf '%s-%s-4%s-a%s-%s\n' "${h:0:8}" "${h:8:4}" "${h:13:3}" "${h:17:3}" "${h:20:12}"
+}
 
 # =============================================================================
 section "0 · Conectividad"
@@ -322,13 +341,65 @@ assert_eq 12.3c "orderBalance 0" "0" "$(jqnum '.orderBalance')"
 st=$(req POST "/payments/$PID/confirm" '{"externalReference":"TRF-001"}')
 assert_title 12.4 "idempotencia (doble confirm)" 409 "payment.already_resolved" "$st"
 req GET "/orders/$TO" >/dev/null; assert_eq 12.5 "balance sin cambios" "0" "$(jqnum '.balance')"
-st=$(checkout "webpay-$RUN@test.cl" "$VAR_SIMPLE" 1); WO="$(jqr '.')"
-st=$(req POST "/orders/$WO/payments/initiate" '{"gateway":"Webpay","type":"Full"}')
-assert_title 12.6 "gateway no configurado" 409 "payment.gateway_not_configured" "$st"
+# Tenant efímero: recién creado no tiene ninguna pasarela configurada, así que la
+# aserción vale sin importar qué haya en la base. Usar $TA acá daba un falso rojo
+# apenas alguien configuraba Webpay de verdad (la config persiste entre corridas).
+TC="$(guid)"
+req POST /products "{\"sku\":\"NOGW-$RUN\",\"name\":\"Sin pasarelas\",\"price\":9000,\"currency\":\"CLP\"}" "$TC" >/dev/null
+PROD_NOGW="$(jqr '.')"
+req GET "/products/$PROD_NOGW" "" "$TC" >/dev/null; VAR_NOGW="$(jqr '.variants[0].id')"
+req POST "/variants/$VAR_NOGW/stock" '{"quantity":1}' "$TC" >/dev/null
+req POST /orders "{\"customer\":{\"email\":\"nogw-$RUN@test.cl\",\"phone\":\"+56911111111\"},\"items\":[{\"productVariantId\":\"$VAR_NOGW\",\"quantity\":1}]}" "$TC" >/dev/null
+WO="$(jqr '.')"
+st=$(req POST "/orders/$WO/payments/initiate" '{"gateway":"Webpay","type":"Full"}' "$TC")
+assert_title 12.6a "Webpay sin configurar" 409 "payment.gateway_not_configured" "$st"
+st=$(req POST "/orders/$WO/payments/initiate" '{"gateway":"MercadoPago","type":"Full"}' "$TC")
+assert_title 12.6b "MercadoPago sin configurar" 409 "payment.gateway_not_configured" "$st"
 st=$(req POST "/orders/$TO/payments/initiate" '{"gateway":"Transfer","type":"Full"}')
 assert_title 12.7 "initiate sobre pagado" 409 "order.already_paid" "$st"
 st=$(req POST "/payments/00000000-0000-0000-0000-000000000001/confirm" '{"externalReference":"x"}')
 assert_title 12.8 "payment inexistente" 404 "payment.not_found" "$st"
+
+# =============================================================================
+# Mercado Pago se confirma por webhook, no por el navegador. Un e2e real necesita
+# credenciales de una cuenta MP y un túnel público (MP no alcanza localhost), así
+# que acá se cubre todo lo que NO depende de eso: los errores de initiate y el
+# contrato HTTP del webhook, que es donde un bug se paga caro — un no-200 mete a
+# MP en un loop de reintentos.
+section "12b · Mercado Pago (sin credenciales reales)"
+MPO="$(guid)"   # tenant efímero propio: configurar MP acá no ensucia $TA
+req POST /products "{\"sku\":\"MP-$RUN\",\"name\":\"MP Test\",\"price\":25000,\"currency\":\"CLP\"}" "$MPO" >/dev/null
+PROD_MP="$(jqr '.')"
+req GET "/products/$PROD_MP" "" "$MPO" >/dev/null; VAR_MP="$(jqr '.variants[0].id')"
+req POST "/variants/$VAR_MP/stock" '{"quantity":5}' "$MPO" >/dev/null
+req POST /orders "{\"customer\":{\"email\":\"mp-$RUN@test.cl\",\"phone\":\"+56911111111\"},\"items\":[{\"productVariantId\":\"$VAR_MP\",\"quantity\":1}]}" "$MPO" >/dev/null
+MPORDER="$(jqr '.')"
+
+st=$(req PUT /payment-methods/MercadoPago '{"credentialsJson":"{\"webhookSecret\":\"x\"}"}' "$MPO")
+assert_status 12b.1 "configurar MP sin accessToken" 200 "$st"
+st=$(req POST "/orders/$MPORDER/payments/initiate" '{"gateway":"MercadoPago","type":"Full"}' "$MPO")
+assert_title 12b.2 "credenciales incompletas" 409 "payment.invalid_credentials" "$st"
+
+st=$(req PUT /payment-methods/MercadoPago '{"credentialsJson":"{\"accessToken\":\"TEST-no-sirve\",\"webhookSecret\":\"\"}"}' "$MPO")
+st=$(req POST "/orders/$MPORDER/payments/initiate" '{"gateway":"MercadoPago","type":"Full"}' "$MPO")
+# Lo que importa: MP rechaza y devolvemos un error de dominio, no un 500.
+assert_title 12b.3 "token inválido -> gateway_failure (no 500)" 409 "payment.gateway_failure" "$st"
+
+# ---- contrato del webhook: SIEMPRE 200, pase lo que pase ---------------------
+# El que llama es una máquina: un 500 no lo ayuda, solo garantiza reintentos.
+HOOK="$API/payments/mercadopago/webhook/$MPO"
+hook() { curl -s -o /dev/null -w '%{http_code}' -X POST "$@"; }
+assert_eq 12b.4 "pago inexistente -> ack" "200" "$(hook "$HOOK?type=payment&data.id=123456789")"
+assert_eq 12b.5 "topic no-payment -> ack" "200" "$(hook "$HOOK?type=merchant_order&data.id=999")"
+assert_eq 12b.6 "id no numérico -> ack" "200" "$(hook "$HOOK?type=payment&data.id=abc")"
+assert_eq 12b.7 "POST sin body ni query -> ack" "200" "$(hook "$HOOK")"
+assert_eq 12b.8 "id en el body JSON -> ack" "200" \
+  "$(hook "$HOOK" -H 'Content-Type: application/json' -d '{"type":"payment","data":{"id":"555"}}')"
+assert_eq 12b.9 "body no-JSON -> ack" "200" \
+  "$(hook "$HOOK" -H 'Content-Type: application/json' -d 'esto-no-es-json')"
+# El tenant viaja en el path porque la llamada servidor-a-servidor no trae headers.
+assert_eq 12b.10 "tenant inválido en el path -> 404" "404" \
+  "$(hook "$API/payments/mercadopago/webhook/no-es-guid?type=payment&data.id=1")"
 
 section "13 · Concurrencia (anti-sobreventa)"
 st=$(req POST /products "{\"sku\":\"RACE-$RUN\",\"name\":\"Race\",\"price\":5000,\"currency\":\"CLP\"}"); RP="$(jqr '.')"
