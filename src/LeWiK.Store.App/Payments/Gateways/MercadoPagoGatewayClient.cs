@@ -71,6 +71,50 @@ public sealed class MercadoPagoGatewayClient : IPaymentGatewayClient
         },
     };
 
+    // Refunds go against MP's payment id — the one the webhook announced and MarkSucceeded
+    // stored — not against the preference id we held at initiation.
+    public async Task<Result<RefundOutcome>> RefundAsync(Payment payment, decimal amount,
+        string decryptedCredentialsJson, Guid idempotencyKey, CancellationToken ct)
+    {
+        var creds = Parse(decryptedCredentialsJson);
+        if (creds is null) return PaymentErrors.InvalidCredentials(PaymentGateway.MercadoPago);
+        if (!long.TryParse(payment.ExternalReference, out var mpPaymentId))
+            return PaymentErrors.TokenNotFound();
+
+        try
+        {
+            var options = new RequestOptions { AccessToken = creds.AccessToken };
+            // The one thing standing between a retried handler and refunding twice: MP dedupes
+            // on this key, so the replay returns the first refund instead of creating a second.
+            options.CustomHeaders.Add("X-Idempotency-Key", idempotencyKey.ToString());
+
+            // Verified against mercadopago-sdk 3.3.1:
+            // PaymentRefundClient.RefundAsync(long paymentId, decimal? amount, RequestOptions, CancellationToken?).
+            // Passing an amount makes it partial; the same call with the full amount is a total refund.
+            var refund = await new PaymentRefundClient().RefundAsync(
+                mpPaymentId, NormalizeAmount(amount, payment.Currency), options, ct);
+
+            var status = refund?.Status;
+            return IsRefundRejected(status)
+                ? new RefundOutcome(false, null, $"status={status}")
+                : new RefundOutcome(true, refund?.Id?.ToString(), null);
+        }
+        catch (Exception ex)
+        {
+            return new RefundOutcome(false, null, ex.Message);
+        }
+    }
+
+    // MP answers approved | in_process | rejected | cancelled. Only the last two are a no.
+    // in_process still ends with the buyer getting their money, so failing on it would record a
+    // refund that did go through as one that didn't — and the money is already gone by then.
+    // Asserting the negative (only these two are failures) rather than the positive keeps an
+    // unfamiliar status from silently becoming a false rejection.
+    internal static bool IsRefundRejected(string? status) =>
+        status is not null
+        && (status.Equals("rejected", StringComparison.OrdinalIgnoreCase)
+         || status.Equals("cancelled", StringComparison.OrdinalIgnoreCase));
+
     // Queries a payment by MP's id (from the webhook) to learn its real status.
     // Never trust the webhook body alone — it only carries an id.
     public async Task<MpPaymentSnapshot?> FetchPaymentAsync(

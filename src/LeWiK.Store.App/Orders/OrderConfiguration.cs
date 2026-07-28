@@ -22,6 +22,7 @@ internal sealed class OrderConfiguration : IEntityTypeConfiguration<Order>
         builder.Property(o => o.Currency).IsRequired().HasMaxLength(3);
         builder.Property(o => o.TotalAmount).HasPrecision(14, 4).IsRequired();
         builder.Property(o => o.PaidAmount).HasPrecision(14, 4).IsRequired();
+        builder.Property(o => o.RefundedAmount).HasPrecision(14, 4).IsRequired();
         builder.Property(o => o.DepositDueAmount).HasPrecision(14, 4).IsRequired();
         builder.Property(o => o.ReservationExpiresAt);
 

@@ -27,6 +27,26 @@ public static class PaymentEndpoints
         app.MapPost("/payments/{paymentId:guid}/confirm", async (Guid paymentId, ConfirmBody? body, ISender sender) =>
             (await sender.Send(new ConfirmPaymentCommand(paymentId, body?.ExternalReference))).ToHttpResult());
 
+        // Store: refund a specific charge (full when no amount is given, partial otherwise).
+        app.MapPost("/payments/{paymentId:guid}/refund", async (
+            Guid paymentId, RefundBody? body, HttpRequest http, ISender sender) =>
+        {
+            // One key per refund REQUEST, minted here so it survives the pipeline's concurrency
+            // retries — the handler re-runs, the key does not change, and the gateway sees the
+            // replay for what it is. An Idempotency-Key header extends the same protection to a
+            // client that retries the HTTP call itself.
+            var key = Guid.TryParse(http.Headers["Idempotency-Key"].FirstOrDefault(), out var supplied)
+                ? supplied
+                : Guid.CreateVersion7();
+
+            return (await sender.Send(
+                new RefundPaymentCommand(paymentId, body?.Amount, body?.Reason, key))).ToHttpResult();
+        });
+
+        // Store: the charges of an order, with how much of each has been refunded.
+        app.MapGet("/orders/{orderId:guid}/payments", async (Guid orderId, ISender sender) =>
+            (await sender.Send(new ListOrderPaymentsQuery(orderId))).ToHttpResult());
+
         // Transbank redirects the BROWSER here — no tenant header, and depending on the flow it
         // arrives by GET (token in the query string) or POST (form fields), so we accept both and
         // read from whichever carries the data. We resolve the payment crossing tenants explicitly
@@ -132,3 +152,4 @@ public sealed record MercadoPagoNotificationData(string? Id);
 public sealed record ConfigureMethodBody(string CredentialsJson);
 public sealed record InitiateBody(PaymentGateway Gateway, PaymentType Type);
 public sealed record ConfirmBody(string? ExternalReference);
+public sealed record RefundBody(decimal? Amount, string? Reason);

@@ -361,6 +361,97 @@ st=$(req POST "/payments/00000000-0000-0000-0000-000000000001/confirm" '{"extern
 assert_title 12.8 "payment inexistente" 404 "payment.not_found" "$st"
 
 # =============================================================================
+# Transferencia es la única pasarela que permite ejercer el mecanismo completo de
+# reembolso sin depender de nadie: no hay API que llamar, la tienda devuelve la
+# plata a mano y esto solo lo registra. Todo lo que se afirma acá (topes, tope
+# parcial, idempotencia, que PaymentStatus NO retroceda) es común a las tres.
+# $TO es el pedido de la sección 12: 1 × 150000, pagado entero con $PID.
+section "12c · Reembolsos"
+st=$(req GET "/orders/$TO/payments")
+assert_status 12c.1a "listar cargos del pedido" 200 "$st"
+assert_eq 12c.1b "un cargo" "1" "$(jqr '. | length')"
+assert_eq 12c.1c "cargo Succeeded" "Succeeded" "$(jqr '.[0].state')"
+assert_eq 12c.1d "sin reembolsos todavía" "0" "$(jqnum '.[0].refundedAmount')"
+assert_eq 12c.1e "es el pago de la sección 12" "$PID" "$(jqr '.[0].id')"
+
+# Los rechazos van ANTES del primer reembolso: con la pasarela real, cada uno de
+# estos que se colara sería plata saliendo de la cuenta de la tienda.
+st=$(req POST "/payments/$PID/refund" '{"amount":999999999}')
+assert_title 12c.2a "monto mayor al cargo" 409 "refund.exceeds_payment" "$st"
+st=$(req POST "/payments/$PID/refund" '{"amount":0}')
+assert_status 12c.2b "monto 0" 400 "$st"
+st=$(req POST "/payments/$PID/refund" '{"amount":-5000}')
+assert_status 12c.2c "monto negativo" 400 "$st"
+st=$(req POST "/payments/00000000-0000-0000-0000-000000000001/refund" '{}')
+assert_title 12c.2d "payment inexistente" 404 "payment.not_found" "$st"
+# Aislamiento: el cargo es de $TA; desde $TB no existe, ni siquiera para negarlo.
+st=$(req POST "/payments/$PID/refund" '{}' "$TB")
+assert_title 12c.2e "cargo de otro tenant" 404 "payment.not_found" "$st"
+st=$(req GET "/orders/$TO/payments" "" "$TB")
+assert_eq 12c.2f "cargos no se filtran a otro tenant" "0" "$(jqr '. | length')"
+# Un cargo sin confirmar no tiene plata que devolver.
+st=$(checkout "refund-pending-$RUN@test.cl" "$VAR_SIMPLE" 1); RPO="$(jqr '.')"
+req POST "/orders/$RPO/payments/initiate" '{"gateway":"Transfer","type":"Full"}' >/dev/null
+RPP="$(jqr '.paymentId')"
+st=$(req POST "/payments/$RPP/refund" '{}')
+assert_title 12c.2g "cargo Pending no es reembolsable" 409 "refund.payment_not_refundable" "$st"
+
+# reason en ASCII a propósito, igual que en la sección 2: Git Bash pasa los
+# argumentos a curl.exe por el codepage ANSI y rompe el UTF-8 del `-d`. La API
+# recibe acentos sin problema (se comprueba mandando el mismo cuerpo con
+# --data-binary @archivo); el que no los sabe pasar es el harness.
+st=$(req POST "/payments/$PID/refund" '{"amount":50000,"reason":"Falto una unidad"}')
+assert_status 12c.3a "reembolso parcial" 200 "$st"
+assert_eq 12c.3b "refund Succeeded" "Succeeded" "$(jqr '.state')"
+assert_eq 12c.3c "monto reembolsado" "50000" "$(jqnum '.amount')"
+assert_eq 12c.3d "orderRefunded acumulado" "50000" "$(jqnum '.orderRefunded')"
+assert_eq 12c.3e "orderPaid intacto" "150000" "$(jqnum '.orderPaid')"
+
+req GET "/orders/$TO" >/dev/null
+assert_eq 12c.4a "paid sigue siendo el bruto" "150000" "$(jqnum '.paid')"
+assert_eq 12c.4b "refunded" "50000" "$(jqnum '.refunded')"
+assert_eq 12c.4c "netPaid = paid - refunded" "100000" "$(jqnum '.netPaid')"
+# El punto de todo el diseño: reembolsar NO deshace el cobro. PaymentStatus sigue
+# registrando lo que se cobró, que es históricamente cierto.
+assert_eq 12c.4d "paymentStatus sigue Paid" "Paid" "$(jqr '.paymentStatus')"
+assert_eq 12c.4e "balance sin cambios" "0" "$(jqnum '.balance')"
+req GET "/orders/$TO/payments" >/dev/null
+assert_eq 12c.4f "el cargo muestra lo reembolsado" "50000" "$(jqnum '.[0].refundedAmount')"
+
+# Sin amount = el resto de lo que quede reembolsable en ese cargo.
+st=$(req POST "/payments/$PID/refund" '{}')
+assert_status 12c.5a "reembolso del resto" 200 "$st"
+assert_eq 12c.5b "toma el saldo restante" "100000" "$(jqnum '.amount')"
+assert_eq 12c.5c "orderRefunded completo" "150000" "$(jqnum '.orderRefunded')"
+
+st=$(req POST "/payments/$PID/refund" '{"amount":1}')
+assert_title 12c.6 "nada más que devolver" 409 "refund.exceeds_payment" "$st"
+
+req GET "/orders/$TO" >/dev/null
+assert_eq 12c.7a "paid intacto tras devolver todo" "150000" "$(jqnum '.paid')"
+assert_eq 12c.7b "refunded == paid" "150000" "$(jqnum '.refunded')"
+assert_eq 12c.7c "netPaid 0" "0" "$(jqnum '.netPaid')"
+assert_eq 12c.7d "paymentStatus NO retrocede" "Paid" "$(jqr '.paymentStatus')"
+# Si PaymentStatus retrocediera, un pedido ya reembolsado quedaría cobrable otra vez.
+st=$(req POST "/orders/$TO/payments/initiate" '{"gateway":"Transfer","type":"Full"}')
+assert_title 12c.7e "pedido reembolsado no se recobra" 409 "order.already_paid" "$st"
+
+# Cancelar y reembolsar son dos decisiones distintas: cancelar libera el stock,
+# reembolsar devuelve la plata. Un pedido cancelado sigue siendo reembolsable.
+st=$(checkout "refund-cancel-$RUN@test.cl" "$VAR_SIMPLE" 1); RCO="$(jqr '.')"
+req POST "/orders/$RCO/payments/initiate" '{"gateway":"Transfer","type":"Full"}' >/dev/null
+RCP="$(jqr '.paymentId')"
+req POST "/payments/$RCP/confirm" '{"externalReference":"TRF-CANCEL"}' >/dev/null
+st=$(req POST "/orders/$RCO/cancel")
+assert_status 12c.8a "cancelar pedido pagado" 200 "$st"
+st=$(req POST "/payments/$RCP/refund" '{"reason":"Pedido cancelado"}')
+assert_status 12c.8b "reembolsar un pedido cancelado" 200 "$st"
+assert_eq 12c.8c "devuelve todo lo cobrado" "150000" "$(jqnum '.amount')"
+req GET "/orders/$RCO" >/dev/null
+assert_eq 12c.8d "queda cancelado y con netPaid 0" "0" "$(jqnum '.netPaid')"
+assert_eq 12c.8e "fulfillment Cancelled" "Cancelled" "$(jqr '.fulfillmentStatus')"
+
+# =============================================================================
 # Mercado Pago se confirma por webhook, no por el navegador. Un e2e real necesita
 # credenciales de una cuenta MP y un túnel público (MP no alcanza localhost), así
 # que acá se cubre todo lo que NO depende de eso: los errores de initiate y el

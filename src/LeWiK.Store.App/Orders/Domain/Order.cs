@@ -13,6 +13,7 @@ public sealed class Order : AggregateRoot, ITenantScoped, IAuditable
     public string Currency { get; private init; } = null!;
     public decimal TotalAmount { get; private set; }
     public decimal PaidAmount { get; private set; }
+    public decimal RefundedAmount { get; private set; }     // separate axis; see ApplyRefund
     public decimal DepositDueAmount { get; private set; }   // required to move forward (abono); == total if pay-in-full
     public DateTime? ReservationExpiresAt { get; private set; }
     public DateTime CreatedAt { get; private set; }
@@ -22,6 +23,7 @@ public sealed class Order : AggregateRoot, ITenantScoped, IAuditable
     public IReadOnlyCollection<OrderLine> Lines => _lines.AsReadOnly();
 
     public decimal BalanceAmount => TotalAmount - PaidAmount;
+    public decimal NetPaidAmount => PaidAmount - RefundedAmount;   // what the store actually kept
     public Money Total => new(TotalAmount, Currency);
     public Money Balance => new(BalanceAmount, Currency);
     
@@ -80,6 +82,25 @@ public sealed class Order : AggregateRoot, ITenantScoped, IAuditable
 
         PaidAmount += amount;
         RecalculatePaymentStatus();
+        return Result.Success();
+    }
+
+    // Refunds are their own axis. PaymentStatus keeps recording what was CHARGED, which stays
+    // historically true; walking it backwards would break its monotonic invariant and the
+    // AlreadyPaid guard, and would let an already-settled order be charged again. The front
+    // shows "paid" and "refunded" as two numbers.
+    //
+    // Deliberately allowed on a cancelled order: cancel (releases stock) and refund (returns
+    // the money) are separate decisions, and cancelling then refunding is the common case.
+    public Result ApplyRefund(decimal amount)
+    {
+        if (amount <= 0)
+            throw new ArgumentOutOfRangeException(nameof(amount), "Refund must be positive.");
+        if (amount > PaidAmount - RefundedAmount)
+            return OrderErrors.RefundExceedsPaid(amount, PaidAmount - RefundedAmount);
+
+        RefundedAmount += amount;
+        Raise(new OrderRefunded(TenantId, Id, CustomerId, amount));
         return Result.Success();
     }
 

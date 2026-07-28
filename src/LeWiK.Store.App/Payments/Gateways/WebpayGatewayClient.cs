@@ -45,6 +45,53 @@ public sealed class WebpayGatewayClient : IPaymentGatewayClient
         }
     }
 
+    // Refunds go against the ORIGINAL charge's token, which is why refunds target a Payment
+    // rather than an order.
+    //
+    // Transbank's API has no idempotency header, so idempotencyKey cannot be honoured here: a
+    // duplicate call is a second, independent refund. Transbank rejects one that exceeds the
+    // remaining balance, so replaying a full refund fails safely — replaying a PARTIAL one
+    // would go through twice. The command carries the key so the caller only builds one refund
+    // request per user action; that is what keeps this call from being repeated.
+    public Task<Result<RefundOutcome>> RefundAsync(Payment payment, decimal amount,
+        string decryptedCredentialsJson, Guid idempotencyKey, CancellationToken ct)
+    {
+        var creds = Parse(decryptedCredentialsJson);
+        if (creds is null)
+            return Task.FromResult<Result<RefundOutcome>>(PaymentErrors.InvalidCredentials(PaymentGateway.Webpay));
+        if (string.IsNullOrWhiteSpace(payment.ExternalReference))
+            return Task.FromResult<Result<RefundOutcome>>(PaymentErrors.TokenNotFound());
+
+        try
+        {
+            // Verified against TransbankSDK 7.2.0: Refund(string token, decimal amount).
+            // CLP has no cents, and the token is the one Create returned at initiation.
+            var response = Build(creds).Refund(
+                payment.ExternalReference,
+                Math.Round(amount, MidpointRounding.AwayFromZero));
+
+            var type = response?.Type ?? "";
+            return Task.FromResult<Result<RefundOutcome>>(
+                IsRefundApplied(type)
+                    ? new RefundOutcome(true, type, null)
+                    : new RefundOutcome(false, null, $"type={type}"));
+        }
+        catch (Exception ex)
+        {
+            return Task.FromResult<Result<RefundOutcome>>(new RefundOutcome(false, null, ex.Message));
+        }
+    }
+
+    // Transbank answers with a TYPE, not a boolean, and which one you get depends on WHEN you
+    // asked: refunding on the same day as the charge REVERSED it, later it NULLIFIED it (and a
+    // partial one comes back as a mall/partial nullification). All of them mean the buyer has
+    // the money back. Reading only "NULLIFIED" would report a same-day refund as a failure.
+    // Separated from the call so this reading can be pinned down without hitting Transbank.
+    internal static bool IsRefundApplied(string? type) =>
+        !string.IsNullOrWhiteSpace(type)
+        && (type.Contains("REVERS", StringComparison.OrdinalIgnoreCase)
+         || type.Contains("NULLIF", StringComparison.OrdinalIgnoreCase));
+
     // Called by the return endpoint to confirm the charge.
     public CommitOutcome Commit(string token, string decryptedCredentialsJson)
     {

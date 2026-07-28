@@ -21,4 +21,15 @@ public static class PaymentErrors
         Error.NotFound("payment.token_not_found", "No pending payment matches that gateway token.");
     public static Error InvalidWebhookSignature(PaymentGateway gateway) =>
         Error.Conflict("payment.invalid_webhook_signature", $"The {gateway} notification signature did not validate.");
+
+    public static Error RefundAlreadyResolved(Guid refundId, RefundState state) =>
+        Error.Conflict("refund.already_resolved", $"Refund {refundId} is already {state}.");
+    public static Error PaymentNotRefundable(Guid paymentId, PaymentState state) =>
+        Error.Conflict("refund.payment_not_refundable",
+            $"Payment {paymentId} is {state}; only succeeded payments can be refunded.");
+    public static Error RefundExceedsPayment(decimal requested, decimal refundable) =>
+        Error.Conflict("refund.exceeds_payment",
+            $"Refund {requested} exceeds the refundable {refundable} of this payment.");
+    public static Error RefundNotSupported(PaymentGateway gateway) =>
+        Error.Conflict("refund.not_supported", $"{gateway} refunds are not automated; register it manually.");
 }

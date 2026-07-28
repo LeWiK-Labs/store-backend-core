@@ -15,6 +15,8 @@ public static class OrderErrors
         Error.Conflict("order.already_paid", "The order is already fully paid.");
     public static Error PaymentExceedsBalance(decimal amount, decimal balance) =>
         Error.Conflict("order.payment_exceeds_balance", $"Payment {amount} exceeds balance {balance}.");
+    public static Error RefundExceedsPaid(decimal amount, decimal refundable) =>
+        Error.Conflict("order.refund_exceeds_paid", $"Refund {amount} exceeds the refundable {refundable} on this order.");
     public static Error BalancePending() =>
         Error.Conflict("order.balance_pending", "The order still has a pending balance.");
     public static Error CannotCancelDelivered() =>
