@@ -19,4 +19,6 @@ public static class PaymentErrors
         Error.Conflict("payment.gateway_failure", $"{gateway} rejected the request: {reason}");
     public static Error TokenNotFound() =>
         Error.NotFound("payment.token_not_found", "No pending payment matches that gateway token.");
+    public static Error InvalidWebhookSignature(PaymentGateway gateway) =>
+        Error.Conflict("payment.invalid_webhook_signature", $"The {gateway} notification signature did not validate.");
 }

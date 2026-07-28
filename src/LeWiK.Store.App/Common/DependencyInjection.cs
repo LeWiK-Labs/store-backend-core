@@ -52,6 +52,7 @@ public static class DependencyInjection
         
         services.AddScoped<Payments.IPaymentGatewayClient, Payments.Gateways.TransferGatewayClient>();
         services.AddScoped<Payments.IPaymentGatewayClient, Payments.Gateways.WebpayGatewayClient>();
+        services.AddScoped<Payments.IPaymentGatewayClient, Payments.Gateways.MercadoPagoGatewayClient>();
         services.AddScoped<Payments.PaymentGatewayResolver>();
 
         services.Configure<Payments.PaymentSettings>(o =>
