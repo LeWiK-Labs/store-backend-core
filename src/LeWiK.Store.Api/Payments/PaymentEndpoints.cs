@@ -83,7 +83,10 @@ public static class PaymentEndpoints
 
             // Same notification also arrives as a JSON body; fall back to it so a delivery
             // without query params confirms the payment instead of silently acking nothing.
-            if (string.IsNullOrWhiteSpace(raw))
+            // Gate on the content type: ReadFromJsonAsync throws InvalidOperationException on a
+            // bodyless POST, and an exception here becomes a 500 — which is what puts MP into
+            // the retry loop this endpoint exists to avoid.
+            if (string.IsNullOrWhiteSpace(raw) && http.HasJsonContentType())
             {
                 try
                 {
@@ -91,7 +94,7 @@ public static class PaymentEndpoints
                     raw = body?.Data?.Id;
                     topic ??= body?.Type ?? body?.Topic;
                 }
-                catch (Exception ex) when (ex is JsonException or BadHttpRequestException) { /* not JSON */ }
+                catch (Exception ex) when (ex is JsonException or BadHttpRequestException) { /* malformed */ }
             }
 
             // We only care about payment notifications; ack everything else. An absent topic is

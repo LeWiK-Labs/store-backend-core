@@ -10,7 +10,10 @@ public sealed class ConcurrencyRetryBehavior<TRequest, TResponse>(
     StoreDbContext db)
     : IPipelineBehavior<TRequest, TResponse> where TRequest : ICommandMarker
 {
-    private const int MaxAttempts = 3;
+    // Contention on one row is bounded by how many writers target the same aggregate at once:
+    // a gateway retrying a webhook, plus a buyer refreshing. 6 attempts absorbs that with room
+    // to spare — measured, 3 was not enough for ten simultaneous writers.
+    private const int MaxAttempts = 6;
 
     public async Task<TResponse> Handle(
         TRequest request, RequestHandlerDelegate<TResponse> next, CancellationToken ct)
@@ -25,9 +28,12 @@ public sealed class ConcurrencyRetryBehavior<TRequest, TResponse>(
             {
                 logger.LogWarning("Concurrency conflict on {Request}, retry {Attempt}/{Max}",
                     typeof(TRequest).Name, attempt, MaxAttempts);
-                // small backoff to de-sync racing requests
                 db.ChangeTracker.Clear();
-                await Task.Delay(attempt * 25, ct);
+                // Exponential backoff with jitter. A fixed delay makes every loser of a race
+                // wake at the same instant and collide again — the retry has to de-sync them,
+                // not just postpone them.
+                var backoff = (1 << (attempt - 1)) * 20;             // 20, 40, 80, 160, 320 ms
+                await Task.Delay(backoff + Random.Shared.Next(backoff), ct);
             }
         }
     }

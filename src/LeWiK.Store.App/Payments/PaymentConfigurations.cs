@@ -39,5 +39,12 @@ internal sealed class PaymentConfiguration : IEntityTypeConfiguration<Payment>
         builder.Property(p => p.FailureReason).HasMaxLength(500).IsRequired(false);
         builder.Property(p => p.CreatedAt).IsRequired();
         builder.Property(p => p.UpdatedAt).IsRequired();
+
+        // Pending → Succeeded must happen exactly once even when two duplicate webhooks race:
+        // without this, both readers see Pending and both resolve it. uint rowversion mapped
+        // to Postgres' xmin system column.
+        builder.Property<uint>("xmin")
+            .HasColumnName("xmin")
+            .IsRowVersion();
     }
 }

@@ -35,6 +35,15 @@ internal sealed class OrderConfiguration : IEntityTypeConfiguration<Order>
             .OnDelete(DeleteBehavior.Cascade);
         builder.Navigation(o => o.Lines).UsePropertyAccessMode(PropertyAccessMode.Field);
 
+        // PaidAmount is read-modify-write, so concurrent payments on the same order must not
+        // silently overwrite each other: a machine-driven webhook can deliver two notifications
+        // at once. uint rowversion mapped to Postgres' xmin system column (same as Inventory);
+        // the conflict surfaces as DbUpdateConcurrencyException and ConcurrencyRetryBehavior
+        // re-runs the handler against fresh state.
+        builder.Property<uint>("xmin")
+            .HasColumnName("xmin")
+            .IsRowVersion();
+
         // Calculated props (BalanceAmount, Total, Balance) have no setter → EF ignores them.
     }
 }
