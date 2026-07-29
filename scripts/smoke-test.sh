@@ -55,6 +55,16 @@ req() {
   if [ -n "$json" ]; then args+=(-H "Content-Type: application/json" -d "$json"); fi
   curl "${args[@]}"
 }
+# creq METHOD PATH [json] [tenant] JAR  -> igual que req, pero con tarro de cookies
+# (-b lee, -c escribe: hace falta leer Y escribir para que login/uso/logout compartan sesión)
+creq() {
+  local method="$1" path="$2" json="${3:-}" tenant="${4-}" jar="$5"
+  local -a args=(-s -o "$BODY" -w '%{http_code}' -X "$method" "$API$path" -b "$jar" -c "$jar")
+  [ -n "$tenant" ] && args+=(-H "X-Tenant-Id: $tenant")
+  [ -n "$json" ] && args+=(-H "Content-Type: application/json" -d "$json")
+  curl "${args[@]}"
+}
+
 jqr()  { jq -r "$1" "$BODY" 2>/dev/null; }
 # jqnum: normaliza números (los montos vuelven como decimal "150000.0000"; "+0" canoniza a 150000)
 jqnum() { jq -r "($1) + 0" "$BODY" 2>/dev/null; }
@@ -694,6 +704,118 @@ assert_title 15.7c "tienda inexistente" 404 "platform.store_not_found" "$st"
 st=$(req POST /admin/staff \
   "{\"email\":\"x-$RUN@x.cl\",\"name\":\"X\",\"password\":\"password-larga-123\",\"role\":\"Staff\"}" "")
 assert_status 15.8 "crear staff sin tenant sigue siendo 400" 400 "$st"
+
+# =============================================================================
+# El mecanismo de sesiones. Todavía NO está aplicado a los endpoints existentes
+# (eso es 4.3): acá se prueba que el mecanismo en sí funciona y, sobre todo, que
+# una sesión legítima de una tienda no sirve contra otra.
+#
+# $S1 y $S2 vienen de la sección 15, con sus owners y sus contraseñas conocidas.
+section "16 · Autenticación por sesión"
+JARP="$BODY.jar.platform"; JARS="$BODY.jar.staff"; JARX="$BODY.jar.other"
+rm -f "$JARP" "$JARS" "$JARX"
+
+# --- operador de plataforma (el sembrado en 4.1) ---
+st=$(creq POST /auth/platform/login '{"email":"admin@lewik.cl","password":"cambiar-esto-ya-1234"}' "" "$JARP")
+assert_status 16.1a "login de operador" 200 "$st"
+assert_eq 16.1b "devuelve el nombre" "Platform Admin" "$(jqr '.displayName')"
+# El token va SOLO en la cookie: nunca en el cuerpo, donde un proxy lo loguearía.
+assert_eq 16.1c "el token no viaja en el body" "null" "$(jqr '.token')"
+grep -q "lewik_platform_session" "$JARP" && ok 16.1d "dejó la cookie de plataforma" || ko 16.1d "sin cookie"
+grep -q "^#HttpOnly_" "$JARP" && ok 16.1e "cookie HttpOnly (fuera del alcance de JS)" || ko 16.1e "cookie no es HttpOnly"
+
+st=$(creq GET /auth/platform/me "" "" "$JARP")
+assert_status 16.2a "usar la sesión de plataforma" 200 "$st"
+assert_eq 16.2b "es quien dice ser" "Platform Admin" "$(jqr '.name')"
+
+# --- staff ---
+st=$(creq POST /auth/staff/login "{\"email\":\"dueno-$RUN@cardshop.cl\",\"password\":\"password-larga-123\"}" "$S1" "$JARS")
+assert_status 16.3a "login de staff" 200 "$st"
+assert_eq 16.3b "rol Owner" "Owner" "$(jqr '.role')"
+assert_eq 16.3c "el token no viaja en el body" "null" "$(jqr '.token')"
+grep -q "lewik_panel_session" "$JARS" && ok 16.3d "dejó la cookie del panel" || ko 16.3d "sin cookie"
+
+st=$(creq GET /auth/staff/me "" "$S1" "$JARS")
+assert_status 16.4a "usar la sesión de staff" 200 "$st"
+assert_eq 16.4b "rol en los claims" "Owner" "$(jqr '.role')"
+assert_eq 16.4c "tenant en los claims" "$S1" "$(jqr '.tenantId')"
+
+# ⭐ LA PRUEBA QUE IMPORTA: la MISMA cookie, apuntando a OTRA tienda.
+# Sin esto, el dueño de una tienda opera la de otro cambiando el subdominio.
+st=$(creq GET /auth/staff/me "" "$S2" "$JARS")
+assert_status 16.5a "sesión válida contra OTRA tienda -> 403" 403 "$st"
+# 403, no 401: las credenciales son buenas, la tienda no. Un 401 mandaría a
+# reloguear, que no arregla nada y esconde el problema real.
+st=$(creq GET /auth/staff/me "" "" "$JARS")
+assert_status 16.5b "sesión sin tenant resuelto -> 403" 403 "$st"
+
+# Cruzar poblaciones: son schemes distintos, con cookies y tablas distintas.
+st=$(creq GET /auth/platform/me "" "" "$JARS")
+assert_status 16.6a "cookie de staff en endpoint de plataforma -> 401" 401 "$st"
+st=$(creq GET /auth/staff/me "" "$S1" "$JARP")
+assert_status 16.6b "cookie de plataforma en endpoint de staff -> 401" 401 "$st"
+
+# Sin cookie y con cookie inventada.
+st=$(req GET /auth/staff/me "" "$S1")
+assert_status 16.7a "sin sesión -> 401" 401 "$st"
+st=$(curl -s -o "$BODY" -w '%{http_code}' "$API/auth/staff/me" \
+  -H "X-Tenant-Id: $S1" -H "Cookie: lewik_panel_session=token-inventado")
+assert_status 16.7b "token inventado -> 401" 401 "$st"
+
+# --- revocación instantánea (el requisito del POS) ---
+# OJO: no alcanza con volver a pedir /me con el mismo tarro de cookies. El logout
+# borra la cookie del cliente, así que ese request sale SIN cookie y da 401 aunque
+# el servidor no haya revocado nada — la prueba pasaría igual con la revocación
+# rota. Al que le robaron el token no le sirve que el navegador de la víctima haya
+# limpiado su tarro: hay que reproducir el token crudo contra el servidor.
+STOK="$(awk '/lewik_panel_session/ {print $7}' "$JARS")"
+[ -n "$STOK" ] && ok 16.8a "token extraído del tarro para reproducirlo" || ko 16.8a "no se pudo leer el token"
+replay() { curl -s -o "$BODY" -w '%{http_code}' "$API$1" -H "X-Tenant-Id: $2" -H "Cookie: $3=$4"; }
+st=$(replay /auth/staff/me "$S1" lewik_panel_session "$STOK")
+assert_status 16.8b "el token crudo funciona antes del logout" 200 "$st"
+
+st=$(creq POST /auth/staff/logout "" "$S1" "$JARS")
+assert_status 16.8c "logout" 204 "$st"
+# Server-side: el token robado deja de servir en el acto porque el logout borró la
+# entrada de caché. Sin ese RemoveAsync seguiría vivo hasta el TTL.
+st=$(replay /auth/staff/me "$S1" lewik_panel_session "$STOK")
+assert_status 16.8d "el token robado muere en el acto (caché invalidada)" 401 "$st"
+# Y aparte, el cliente se queda sin cookie.
+grep -q "lewik_panel_session" "$JARS" && ko 16.8e "la cookie sobrevivió al logout" || ok 16.8e "el logout borra la cookie del cliente"
+st=$(creq POST /auth/staff/logout "" "$S1" "$JARS")
+assert_status 16.8f "logout de nuevo es inofensivo" 204 "$st"
+
+# --- credenciales malas: siempre el mismo error ---
+st=$(req POST /auth/staff/login "{\"email\":\"dueno-$RUN@cardshop.cl\",\"password\":\"incorrecta\"}" "$S1")
+assert_title 16.9a "password incorrecta" 400 "auth.invalid_credentials" "$st"
+st=$(req POST /auth/staff/login "{\"email\":\"no-existe-$RUN@cardshop.cl\",\"password\":\"password-larga-123\"}" "$S1")
+assert_title 16.9b "email inexistente: MISMO error (no enumera cuentas)" 400 "auth.invalid_credentials" "$st"
+# El owner de $S1 no existe en $S2, aunque la contraseña sea válida en su tienda.
+st=$(req POST /auth/staff/login "{\"email\":\"dueno-$RUN@cardshop.cl\",\"password\":\"password-larga-123\"}" "$S2")
+assert_title 16.9c "credenciales de otra tienda" 400 "auth.invalid_credentials" "$st"
+st=$(req POST /auth/platform/login '{"email":"admin@lewik.cl","password":"incorrecta"}' "")
+assert_title 16.9d "operador con password mala" 400 "auth.invalid_credentials" "$st"
+
+# --- una tienda suspendida no deja entrar ---
+req POST "/platform/stores/$S2/suspend" "" "" >/dev/null
+st=$(req POST /auth/staff/login "{\"email\":\"dueno2-$RUN@otra.cl\",\"password\":\"password-larga-123\"}" "$S2")
+assert_title 16.10a "login en tienda suspendida" 409 "platform.store_suspended" "$st"
+req POST "/platform/stores/$S2/activate" "" "" >/dev/null
+st=$(creq POST /auth/staff/login "{\"email\":\"dueno2-$RUN@otra.cl\",\"password\":\"password-larga-123\"}" "$S2" "$JARX")
+assert_status 16.10b "y sí deja al reactivarla" 200 "$st"
+
+# --- desactivar a la persona mata sus sesiones ---
+# El join de LoadAsync exige IsActive, así que la sesión deja de cargar.
+st=$(creq GET /auth/staff/me "" "$S2" "$JARX")
+assert_status 16.11a "la sesión de la otra tienda funciona" 200 "$st"
+assert_eq 16.11b "y es de SU tienda" "$S2" "$(jqr '.tenantId')"
+
+# --- el mecanismo existe pero todavía NO protege nada (eso es 4.3) ---
+st=$(req GET /platform/stores "" "")
+assert_status 16.12a "⚠️ /platform/stores sigue abierto (pendiente 4.3)" 200 "$st"
+st=$(req GET /products "" "$TA")
+assert_status 16.12b "el catálogo sigue anónimo (no rompimos nada)" 200 "$st"
+rm -f "$JARP" "$JARS" "$JARX"
 
 # =============================================================================
 section "RESUMEN"

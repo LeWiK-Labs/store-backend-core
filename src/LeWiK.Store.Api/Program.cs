@@ -1,3 +1,4 @@
+using LeWiK.Store.Api.Auth;
 using LeWiK.Store.Api.Catalog;
 using LeWiK.Store.Api.Inventory;
 using LeWiK.Store.Api.Orders;
@@ -21,10 +22,15 @@ builder.Services.AddCors(options =>
     options.AddPolicy("Frontend", policy => policy
         .WithOrigins(builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ?? [])
         .AllowAnyHeader()
-        .AllowAnyMethod());
+        .AllowAnyMethod()
+        // Session cookies travel cross-origin from the panel, and credentials are incompatible
+        // with a wildcard origin — which is why the explicit allow-list has been there from
+        // the start. The front must send credentials: 'include'.
+        .AllowCredentials());
 });
 
 builder.Services.AddStoreApp(builder.Configuration.GetConnectionString("Default")!, redisConnection, builder.Configuration);
+builder.Services.AddStoreAuth();
 builder.Services.AddExceptionHandler<LeWiK.Store.Api.Common.GlobalExceptionHandler>();
 builder.Services.AddProblemDetails();
 
@@ -71,6 +77,11 @@ app.UseCors("Frontend");
 //Middlewares
 app.UseMiddleware<LeWiK.Store.Api.Tenancy.TenantResolutionMiddleware>();
 
+// Order matters: the tenant has to be resolved before TenantMatchRequirement can compare the
+// session's store against the requested one.
+app.UseAuthentication();
+app.UseAuthorization();
+
 app.MapGet("/", () => "Hello World!");
 
 app.MapGet("/health/db", async (StoreDbContext db) =>
@@ -90,6 +101,7 @@ app.MapOrderEndpoints();
 app.MapPaymentEndpoints();
 app.MapPaymentLinkEndpoints();
 app.MapPlatformEndpoints();
+app.MapAuthEndpoints();
 
 // TEMPORARY smoke endpoint — remove once entitlement is enforced for real
 app.MapGet("/health/entitlement", async (ITenantContext tenant, IBackOfficeClient backOffice) =>

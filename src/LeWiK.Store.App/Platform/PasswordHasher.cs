@@ -17,6 +17,15 @@ public sealed class PasswordHasher
 
     public string Hash(string password) => _hasher.HashPassword(Subject, password);
 
+    // A real hash of a value nobody knows, used to spend the same PBKDF2 time when the account
+    // does not exist. Without it, "unknown email" answers noticeably faster than "wrong
+    // password", and that timing difference IS an account-enumeration oracle — which would
+    // undo the whole point of returning one indistinguishable error for both.
+    private readonly string _decoy = new PasswordHasher<Account>()
+        .HashPassword(Subject, Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)));
+
+    public void SpendVerificationTime() => Verify(_decoy, "no-such-password");
+
     // Fails CLOSED on anything it cannot read. Identity's VerifyHashedPassword throws
     // FormatException on a hash that is not valid base64 — a truncated column, a row edited
     // by hand, a value written by something else — instead of returning Failed. Letting that

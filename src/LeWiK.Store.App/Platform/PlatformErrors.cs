@@ -14,6 +14,10 @@ public static class PlatformErrors
         Error.Conflict("platform.staff_email_taken", $"'{email}' is already a user of this store.");
     public static Error StaffNotFound(Guid id) =>
         Error.NotFound("platform.staff_not_found", $"Staff user {id} was not found.");
+    public static Error InvalidCredentials() =>
+        Error.Validation("auth.invalid_credentials", "Email or password is incorrect.");
+    public static Error AccountDisabled() =>
+        Error.Conflict("auth.account_disabled", "This account is disabled.");
     public static Error StoreSuspended() =>
         Error.Conflict("platform.store_suspended", "This store is suspended.");
 }

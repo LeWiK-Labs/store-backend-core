@@ -46,6 +46,45 @@ internal sealed class StaffUserConfiguration : IEntityTypeConfiguration<StaffUse
     }
 }
 
+internal sealed class StaffSessionConfiguration : IEntityTypeConfiguration<StaffSession>
+{
+    public void Configure(EntityTypeBuilder<StaffSession> b)
+    {
+        b.ToTable("staff_sessions");
+        b.HasKey(s => s.Id);
+        b.Property(s => s.TenantId).IsRequired();
+        b.Property(s => s.StaffUserId).IsRequired();
+        b.HasIndex(s => s.StaffUserId);              // "revoke every session for this person"
+        b.Property(s => s.TokenHash).IsRequired().HasMaxLength(64);
+        // The hot path: this index is hit on every authenticated request. Unique because two
+        // sessions sharing a token would make revocation ambiguous.
+        b.HasIndex(s => s.TokenHash).IsUnique();
+        b.Property(s => s.ExpiresAt).IsRequired();
+        b.Property(s => s.RevokedAt).IsRequired(false);
+        b.Property(s => s.UserAgent).HasMaxLength(400).IsRequired(false);
+        b.Property(s => s.CreatedAt).IsRequired();
+        b.Property(s => s.UpdatedAt).IsRequired();
+    }
+}
+
+internal sealed class PlatformSessionConfiguration : IEntityTypeConfiguration<PlatformSession>
+{
+    public void Configure(EntityTypeBuilder<PlatformSession> b)
+    {
+        b.ToTable("platform_sessions");
+        b.HasKey(s => s.Id);
+        b.Property(s => s.PlatformOperatorId).IsRequired();
+        b.HasIndex(s => s.PlatformOperatorId);
+        b.Property(s => s.TokenHash).IsRequired().HasMaxLength(64);
+        b.HasIndex(s => s.TokenHash).IsUnique();
+        b.Property(s => s.ExpiresAt).IsRequired();
+        b.Property(s => s.RevokedAt).IsRequired(false);
+        b.Property(s => s.UserAgent).HasMaxLength(400).IsRequired(false);
+        b.Property(s => s.CreatedAt).IsRequired();
+        b.Property(s => s.UpdatedAt).IsRequired();
+    }
+}
+
 internal sealed class PlatformOperatorConfiguration : IEntityTypeConfiguration<PlatformOperator>
 {
     public void Configure(EntityTypeBuilder<PlatformOperator> b)
