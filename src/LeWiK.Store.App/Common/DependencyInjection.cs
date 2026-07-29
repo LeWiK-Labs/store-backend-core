@@ -41,6 +41,7 @@ public static class DependencyInjection
         services.AddSingleton<IBackOfficeClient, StubBackOfficeClient>();
 
         services.AddScoped<Orders.PurchaseLimitEnforcer>();
+        services.AddSingleton<Platform.PasswordHasher>();
         
         // Distributed cache: Redis when configured, in-memory fallback otherwise.
         if (!string.IsNullOrEmpty(redisConnectionString))

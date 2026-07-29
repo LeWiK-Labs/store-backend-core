@@ -616,6 +616,86 @@ st=$(req POST /products '{"sku":"","name":"","price":-1,"currency":"X"}')
 [ "$st" = "400" ] && [ "$(jqr '.errors | type')" = "object" ] && ok 14.8 "errores de validación agrupados" || ko 14.8 "errores de validación agrupados"
 
 # =============================================================================
+# Hasta acá el tenant era un GUID suelto en un header, sin nada detrás. Ahora las
+# tiendas existen de verdad, y el id que devuelve POST /platform/stores ES el
+# tenant id de todo el resto del sistema.
+#
+# ⚠️ Estos endpoints están SIN AUTENTICAR hasta 4.3. Que el smoke test pueda
+# crear tiendas sin credenciales no es un descuido del test: es el estado real
+# del backend, y es exactamente lo que 4.3 tiene que cerrar.
+section "15 · Platform (tiendas y usuarios)"
+SLUG="cardshop-$RUN"
+st=$(req POST /platform/stores \
+  "{\"name\":\"Card Shop\",\"slug\":\"$SLUG\",\"ownerEmail\":\"dueno-$RUN@cardshop.cl\",\"ownerName\":\"Dueno\",\"ownerPassword\":\"password-larga-123\"}" "")
+assert_status 15.1a "crear tienda SIN header de tenant" 200 "$st"
+S1="$(jqr '.id')"
+assert_eq 15.1b "slug normalizado" "$SLUG" "$(jqr '.slug')"
+assert_eq 15.1c "nace activa" "Active" "$(jqr '.status')"
+assert_eq 15.1d "sin dominio propio" "null" "$(jqr '.customDomain')"
+
+# El slug es un label DNS: va a ser un subdominio, así que se valida como tal.
+st=$(req POST /platform/stores \
+  "{\"name\":\"x\",\"slug\":\"Con Mayusculas Y Espacios\",\"ownerEmail\":\"a-$RUN@x.cl\",\"ownerName\":\"A\",\"ownerPassword\":\"password-larga-123\"}" "")
+assert_status 15.2a "slug inválido" 400 "$st"
+st=$(req POST /platform/stores \
+  "{\"name\":\"x\",\"slug\":\"otro-$RUN\",\"ownerEmail\":\"no-es-email\",\"ownerName\":\"A\",\"ownerPassword\":\"password-larga-123\"}" "")
+assert_status 15.2b "email de owner inválido" 400 "$st"
+st=$(req POST /platform/stores \
+  "{\"name\":\"x\",\"slug\":\"otro2-$RUN\",\"ownerEmail\":\"b-$RUN@x.cl\",\"ownerName\":\"A\",\"ownerPassword\":\"corta\"}" "")
+assert_status 15.2c "password de owner muy corta" 400 "$st"
+st=$(req POST /platform/stores \
+  "{\"name\":\"Otra\",\"slug\":\"$SLUG\",\"ownerEmail\":\"c-$RUN@x.cl\",\"ownerName\":\"A\",\"ownerPassword\":\"password-larga-123\"}" "")
+assert_title 15.2d "slug repetido" 409 "platform.slug_taken" "$st"
+
+# La tienda nace con su dueño: una tienda que nadie puede administrar no sirve.
+st=$(req GET /admin/staff "" "$S1")
+assert_status 15.3a "listar staff de la tienda nueva" 200 "$st"
+assert_eq 15.3b "nace con exactamente un usuario" "1" "$(jqr '. | length')"
+assert_eq 15.3c "y es el Owner" "Owner" "$(jqr '.[0].role')"
+assert_eq 15.3d "email del owner normalizado" "dueno-$RUN@cardshop.cl" "$(jqr '.[0].email')"
+# El hash no sale nunca, ni para el admin que lo acaba de fijar.
+assert_eq 15.3e "no expone el passwordHash" "null" "$(jqr '.[0].passwordHash')"
+
+st=$(req POST /admin/staff \
+  "{\"email\":\"caja-$RUN@cardshop.cl\",\"name\":\"Cajera\",\"password\":\"password-larga-456\",\"role\":\"Cashier\"}" "$S1")
+assert_status 15.4a "sumar una cajera" 200 "$st"
+assert_eq 15.4b "rol Cashier (listo para el POS de fase 5)" "Cashier" "$(jqr '.role')"
+st=$(req POST /admin/staff \
+  "{\"email\":\"CAJA-$RUN@cardshop.cl\",\"name\":\"Otra\",\"password\":\"password-larga-789\",\"role\":\"Staff\"}" "$S1")
+assert_title 15.4c "email repetido en la misma tienda" 409 "platform.staff_email_taken" "$st"
+
+# Aislamiento: el staff SÍ es tenant-scoped, así que otra tienda no lo ve.
+st=$(req POST /platform/stores \
+  "{\"name\":\"Otra Tienda\",\"slug\":\"otra-$RUN\",\"ownerEmail\":\"dueno2-$RUN@otra.cl\",\"ownerName\":\"Dueno2\",\"ownerPassword\":\"password-larga-123\"}" "")
+S2="$(jqr '.id')"
+req GET /admin/staff "" "$S2" >/dev/null
+assert_eq 15.5a "la otra tienda solo ve su owner" "1" "$(jqr '. | length')"
+assert_eq 15.5b "y es el suyo" "dueno2-$RUN@otra.cl" "$(jqr '.[0].email')"
+# El mismo email puede trabajar en dos tiendas: la unicidad es por tienda.
+st=$(req POST /admin/staff \
+  "{\"email\":\"caja-$RUN@cardshop.cl\",\"name\":\"Cajera\",\"password\":\"password-larga-456\",\"role\":\"Cashier\"}" "$S2")
+assert_status 15.5c "el mismo email en otra tienda sí se puede" 200 "$st"
+
+# Store NO es tenant-scoped: listar tiendas las trae todas, sin filtro.
+st=$(req GET /platform/stores "" "")
+assert_status 15.6a "listar tiendas sin tenant" 200 "$st"
+[ "$(jqr "[.[] | select(.id==\"$S1\")] | length")" = "1" ] && ok 15.6b "la tienda 1 aparece" || ko 15.6b "falta la tienda 1"
+[ "$(jqr "[.[] | select(.id==\"$S2\")] | length")" = "1" ] && ok 15.6c "la tienda 2 aparece (sin filtro de tenant)" || ko 15.6c "falta la tienda 2"
+
+# Suspender/activar: el único enforcement de suscripción que existe.
+st=$(req POST "/platform/stores/$S2/suspend" "" "")
+assert_eq 15.7a "suspender" "Suspended" "$(jqr '.status')"
+st=$(req POST "/platform/stores/$S2/activate" "" "")
+assert_eq 15.7b "reactivar" "Active" "$(jqr '.status')"
+st=$(req POST "/platform/stores/00000000-0000-0000-0000-000000000001/suspend" "" "")
+assert_title 15.7c "tienda inexistente" 404 "platform.store_not_found" "$st"
+
+# El staff sí exige tenant; el guard sigue puesto para todo lo que no sea platform.
+st=$(req POST /admin/staff \
+  "{\"email\":\"x-$RUN@x.cl\",\"name\":\"X\",\"password\":\"password-larga-123\",\"role\":\"Staff\"}" "")
+assert_status 15.8 "crear staff sin tenant sigue siendo 400" 400 "$st"
+
+# =============================================================================
 section "RESUMEN"
 printf "  ${G}PASS: %d${Z}   ${R}FAIL: %d${Z}   ${Y}WARN: %d${Z}   (RUN=%s)\n" "$PASS" "$FAIL" "$WARN" "$RUN"
 [ "$WARN" -gt 0 ] && echo "  (WARN = zonas de riesgo pendientes; tras F1–F8 deberían ser 0)"

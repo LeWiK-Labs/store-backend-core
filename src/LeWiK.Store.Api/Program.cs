@@ -2,7 +2,10 @@ using LeWiK.Store.Api.Catalog;
 using LeWiK.Store.Api.Inventory;
 using LeWiK.Store.Api.Orders;
 using LeWiK.Store.Api.Payments;
+using LeWiK.Store.Api.Platform;
 using LeWiK.Store.Api.Preorders;
+using LeWiK.Store.App.Platform;
+using LeWiK.Store.App.Platform.Domain;
 using LeWiK.Store.App.Common;
 using LeWiK.Store.App.Common.BackOffice;
 using LeWiK.Store.App.Common.Persistence;
@@ -45,6 +48,23 @@ if (app.Configuration.GetValue<bool>("Database:MigrateOnStartup"))
         .Database.Migrate();
 }
 
+// Bootstrap the first platform operator — the chicken-and-egg exit, since creating operators
+// will require being one. Config-gated: set the values once, start, then remove them. Does
+// nothing if any operator already exists, so it is safe to leave configured by accident.
+var seedEmail = app.Configuration["Platform:SeedOperatorEmail"];
+var seedPassword = app.Configuration["Platform:SeedOperatorPassword"];
+if (!string.IsNullOrWhiteSpace(seedEmail) && !string.IsNullOrWhiteSpace(seedPassword))
+{
+    using var seedScope = app.Services.CreateScope();
+    var seedDb = seedScope.ServiceProvider.GetRequiredService<StoreDbContext>();
+    if (!await seedDb.Set<PlatformOperator>().AnyAsync())
+    {
+        var hasher = seedScope.ServiceProvider.GetRequiredService<PasswordHasher>();
+        seedDb.Add(new PlatformOperator(seedEmail, "Platform Admin", hasher.Hash(seedPassword)));
+        await seedDb.SaveChangesAsync();
+    }
+}
+
 app.UseExceptionHandler();
 app.UseCors("Frontend");
 
@@ -69,6 +89,7 @@ app.MapPreorderEndpoints();
 app.MapOrderEndpoints();
 app.MapPaymentEndpoints();
 app.MapPaymentLinkEndpoints();
+app.MapPlatformEndpoints();
 
 // TEMPORARY smoke endpoint — remove once entitlement is enforced for real
 app.MapGet("/health/entitlement", async (ITenantContext tenant, IBackOfficeClient backOffice) =>
