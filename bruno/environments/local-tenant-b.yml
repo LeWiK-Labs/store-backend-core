@@ -9,6 +9,9 @@ variables:
   - name: tenantId
     value: ""
     enabled: true
+  - name: storeSlug
+    value: otratienda
+    enabled: true
   - name: staffEmail
     value: dueno@otratienda.cl
     enabled: true

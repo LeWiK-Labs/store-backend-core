@@ -9,9 +9,25 @@ docs: |-
   # LeWiK Store API
   Backend de la tienda online (TCG), modular monolith en .NET.
 
-  **Multi-tenant:** cada request lleva `X-Tenant-Id`, heredado de esta
-  colección y poblado por el environment activo. Cambiá entre
+  **Multi-tenant:** desde 4.4 la tienda se resuelve por el DOMINIO de la request
+  contra la tabla `stores`. `X-Tenant-Id` sigue heredándose de esta colección
+  porque es cómodo acá, pero es una comodidad de desarrollo: está detrás de
+  `Tenancy:AllowHeaderOverride`, la app se niega a arrancar con eso prendido
+  fuera de Development, y en producción el header no hace nada. Cambiá entre
   "Local · Tenant A/B" para operar como tiendas distintas.
+
+  ## Cómo se identifica la tienda de verdad
+  | Host | Resuelve por |
+  |---|---|
+  | `cardshop.lewik.app` | slug |
+  | `panel.cardshop.lewik.app` | slug (se descarta `panel.`) |
+  | `cardshop.cl` / `www.cardshop.cl` | dominio propio |
+  | `panel.cardshop.cl` | dominio propio (se descarta `panel.`) |
+
+  `panel.` es routing del front, no del backend: resuelve la misma tienda, y qué
+  puede hacer quien llama lo deciden las políticas de 4.3. En dev
+  `Tenancy:BaseDomain` es `localhost`, así que `cardshop.localhost` es el mismo
+  camino. Ver **Health > Tenant by Domain**.
 
   ## Por dónde empezar (cambió en 4.3)
   1. **Auth > Platform Login** — sesión de operador de LeWiK.

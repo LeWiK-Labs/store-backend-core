@@ -45,6 +45,16 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 
 var app = builder.Build();
 
+// Refuse to start with the tenant header override enabled outside Development: it would let
+// anyone operate any store by sending X-Tenant-Id. Crashing on boot is the point — a
+// misconfiguration this severe must not survive as a warning nobody reads.
+if (!app.Environment.IsDevelopment()
+    && app.Configuration.GetValue<bool>("Tenancy:AllowHeaderOverride"))
+{
+    throw new InvalidOperationException(
+        "Tenancy:AllowHeaderOverride must be false outside Development.");
+}
+
 // Apply pending migrations on startup (containerized dev convenience; off by default,
 // enabled via Database__MigrateOnStartup env var in docker-compose only).
 if (app.Configuration.GetValue<bool>("Database:MigrateOnStartup"))

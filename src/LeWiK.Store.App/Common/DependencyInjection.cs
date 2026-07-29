@@ -37,8 +37,9 @@ public static class DependencyInjection
         //Validators
         services.AddValidatorsFromAssembly(assembly);
         //Clients
-        //back-office client (stub until the back-office exists)
-        services.AddSingleton<IBackOfficeClient, StubBackOfficeClient>();
+        // Entitlement now comes from the local Store table (4.4). Scoped, not singleton:
+        // it queries the DbContext, which is scoped.
+        services.AddScoped<IBackOfficeClient, Platform.LocalEntitlementService>();
 
         services.AddScoped<Orders.PurchaseLimitEnforcer>();
         services.AddSingleton<Platform.PasswordHasher>();
@@ -58,6 +59,10 @@ public static class DependencyInjection
 
         services.Configure<Payments.PaymentSettings>(o =>
             configuration?.GetSection("Payments").Bind(o));
+
+        services.Configure<Platform.TenancySettings>(o =>
+            configuration?.GetSection("Tenancy").Bind(o));
+        services.AddScoped<Platform.StoreResolver>();
 
         return services;
     }

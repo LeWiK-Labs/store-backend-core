@@ -2,3 +2,7 @@
 info: { name: Health, type: folder, seq: 99 }
 docs: |-
   Endpoints de diagnóstico (temporales, varios se borran al endurecer auth).
+
+  `/health/*` es de las pocas rutas que siguen respondiendo con la tienda
+  suspendida: una tienda que no pagó no es una tienda rota, y el staff tiene que
+  poder ver qué pasa en vez de toparse con una pared muda.

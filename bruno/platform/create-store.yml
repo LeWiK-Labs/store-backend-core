@@ -26,7 +26,11 @@ runtime:
     - type: tests
       code: |-
         test("returns 200", function() { expect(res.status).to.equal(200); });
-        if (res.status === 200) { bru.setEnvVar("tenantId", res.body.id); }
+        if (res.status === 200) {
+          bru.setEnvVar("tenantId", res.body.id);
+          // El slug es el subdominio de la tienda: lo usa Health > Tenant by Domain.
+          bru.setEnvVar("storeSlug", res.body.slug);
+        }
 settings:
   encodeUrl: true
 docs: |-
@@ -35,8 +39,10 @@ docs: |-
   nadie puede administrar no sirve, y crearlos por separado deja una ventana en
   la que existe una sin el otro.
 
-  El test guarda el id en `tenantId` del environment, que es lo que van a usar
-  todas las demás requests como `X-Tenant-Id`.
+  El test guarda el id en `tenantId` y el slug en `storeSlug`. El primero es la
+  comodidad de desarrollo (`X-Tenant-Id`); el segundo es la identidad de verdad,
+  porque desde 4.4 la tienda se resuelve por el dominio: `<slug>.lewik.app`, o
+  `customDomain` si la tienda trae el suyo.
 
   ## Body
   | campo | tipo | req | nota |

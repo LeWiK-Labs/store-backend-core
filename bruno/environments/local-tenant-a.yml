@@ -9,6 +9,11 @@ variables:
   - name: tenantId
     value: ""
     enabled: true
+  # El subdominio de la tienda: lo llena Create Store y lo usa Health > Tenant by
+  # Domain, que resuelve como en producción en vez de por el header.
+  - name: storeSlug
+    value: cardshop
+    enabled: true
   - name: staffEmail
     value: dueno@cardshop.cl
     enabled: true

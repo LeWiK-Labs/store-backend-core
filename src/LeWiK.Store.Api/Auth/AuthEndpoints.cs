@@ -82,12 +82,22 @@ public static class AuthEndpoints
         http.Response.Cookies.Append(name, token, new CookieOptions
         {
             HttpOnly = true,
-            // Plain HTTP only survives on localhost; anywhere else the cookie is HTTPS-only.
-            Secure = !http.Request.Host.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase),
+            // Plain HTTP only survives on loopback; anywhere else the cookie is HTTPS-only.
+            Secure = !IsLoopback(http.Request.Host.Host),
             SameSite = SameSiteMode.Lax,
             Path = "/",
             Expires = expiresAt,
         });
+
+    // Since 4.4 the dev panel lives at panel.<slug>.localhost, not at localhost, and an exact
+    // match here marked its cookie Secure — which no client stores over plain HTTP. Login
+    // returned 200 and the session vanished. RFC 6761 reserves the whole .localhost TLD for
+    // the loopback interface and browsers treat it as a secure context, which is precisely
+    // what makes it usable for development; a production host can never end in it.
+    private static bool IsLoopback(string host) =>
+        host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
+        || host.EndsWith(".localhost", StringComparison.OrdinalIgnoreCase)
+        || host is "127.0.0.1" or "[::1]";
 
     // Path must match the one it was set with, or the browser keeps the original cookie.
     private static void ClearCookie(HttpContext http, string name) =>

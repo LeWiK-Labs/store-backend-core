@@ -25,6 +25,16 @@
 #
 # Requiere un PlatformOperator ya sembrado (Platform:SeedOperator* en appsettings).
 # Se puede apuntar a otro con OPERATOR_EMAIL / OPERATOR_PASSWORD.
+#
+# ---- Desde 4.4: el header de tenant es una comodidad de desarrollo -------------
+# La tienda se resuelve por el dominio de la request. X-Tenant-Id sigue existiendo
+# pero detrás de Tenancy:AllowHeaderOverride, y la app se niega a arrancar con eso
+# prendido fuera de Development. Las secciones 1–17 lo siguen usando (es lo que hace
+# el script legible); la sección 18 no lo manda nunca y prueba el camino real, que es
+# el único que existe en producción.
+#
+# La sección 18 necesita Tenancy:BaseDomain = "localhost" (el default de
+# appsettings.Development.json) y crea una tercera tienda con dominio propio.
 # =============================================================================
 set -u
 
@@ -89,6 +99,25 @@ pub() {
   local method="$1" path="$2" json="${3:-}" tenant="${4-$TA}"
   local -a args=(-s -o "$BODY" -w '%{http_code}' -X "$method" "$API$path")
   [ -n "$tenant" ] && args+=(-H "X-Tenant-Id: $tenant")
+  [ -n "$json" ] && args+=(-H "Content-Type: application/json" -d "$json")
+  curl "${args[@]}"
+}
+
+# dom METHOD PATH HOST [json] [jar]  -> como llega en producción (4.4): la tienda sale del
+# dominio y NUNCA se manda X-Tenant-Id. El header de tenant es una comodidad de desarrollo
+# apagada fuera de Development, así que todo lo que se pruebe con él prueba una ruta que en
+# producción no existe; esto prueba la que sí.
+#
+# OJO con las cookies: curl las guarda y las manda por el HOST QUE MANDAMOS, no por el host
+# de la URL. Un login con Host: panel.a.localhost deja la cookie atada a ese dominio y no
+# viaja a panel.b.localhost — igual que en un navegador. Está bien que sea así, pero implica
+# que un tarro no sirve para probar "la misma sesión contra otra tienda": para eso hay que
+# repetir el token crudo a mano (ver 18.5c).
+dom() {
+  local method="$1" path="$2" h="$3" json="${4:-}" jar="${5-}"
+  local -a args=(-s -o "$BODY" -w '%{http_code}' -X "$method" "$API$path"
+                 -H "Host: $h" -H "X-Requested-With: LeWiKPanel")
+  [ -n "$jar" ] && args+=(-b "$jar" -c "$jar")
   [ -n "$json" ] && args+=(-H "Content-Type: application/json" -d "$json")
   curl "${args[@]}"
 }
@@ -1004,6 +1033,127 @@ st=$(pub POST /auth/staff/login \
   "{\"email\":\"caja-$RUN@cardshop.cl\",\"password\":\"password-larga-456\"}" "$S1")
 assert_title 17.7e "y tampoco puede volver a entrar" 409 "auth.account_disabled" "$st"
 rm -f "$JAR_CAJA"
+
+# =============================================================================
+# La tienda deja de identificarse por un header que elige quien llama y pasa a salir del
+# dominio de la request. Todo esto se prueba con `dom`, es decir SIN X-Tenant-Id: es la
+# única forma de que las aserciones digan algo sobre producción, donde el header no existe.
+#
+# En dev Tenancy:BaseDomain es "localhost" y *.localhost resuelve a 127.0.0.1 sin tocar
+# el archivo hosts, así que smoke-a-123.localhost es el mismo camino que cardshop.lewik.app.
+section "18 · Resolución de tenant por dominio"
+SLUG_A="smoke-a-$RUN"; SLUG_B="smoke-b-$RUN"
+
+# --- las formas que tienen que caer en la misma tienda ---
+st=$(dom GET /health/tenant "$SLUG_A.localhost")
+assert_eq 18.1a "el slug resuelve la tienda, sin ningún header" "$TA" "$(jqr '.tenantId')"
+st=$(dom GET /health/tenant "panel.$SLUG_A.localhost")
+assert_eq 18.1b "panel. es routing del front: misma tienda" "$TA" "$(jqr '.tenantId')"
+st=$(dom GET /health/tenant "www.$SLUG_A.localhost")
+assert_eq 18.1c "www. también" "$TA" "$(jqr '.tenantId')"
+st=$(dom GET /health/tenant "$SLUG_B.localhost")
+assert_eq 18.1d "otro slug, otra tienda" "$TB" "$(jqr '.tenantId')"
+
+# --- y las que no tienen que resolver nada ---
+st=$(dom GET /health/tenant "noexiste-$RUN.localhost")
+assert_eq 18.2a "host desconocido: sin tenant" "no tenant resolved" "$(jqr '.message')"
+st=$(dom GET /health/tenant "panel.localhost")
+assert_eq 18.2b "subdominio reservado de la plataforma" "no tenant resolved" "$(jqr '.message')"
+st=$(dom GET /health/tenant "api.localhost")
+assert_eq 18.2c "api. tampoco es una tienda" "no tenant resolved" "$(jqr '.message')"
+# Adivinar cuál de tres etiquetas es el slug apuntaría un host que no publicamos a una
+# tienda real; bajo el dominio base solo existen slug.base y panel.slug.base.
+st=$(dom GET /health/tenant "a.b.$SLUG_A.localhost")
+assert_eq 18.2d "forma no soportada: no resuelve por las dudas" "no tenant resolved" "$(jqr '.message')"
+st=$(dom GET /health/tenant "otro.$SLUG_A.localhost")
+assert_eq 18.2e "prefijo desconocido: tampoco" "no tenant resolved" "$(jqr '.message')"
+
+# --- dominio propio de la tienda (el caso www.tienda.cl) ---
+DOM="smoke-$RUN.cl"
+st=$(plat POST /platform/stores \
+  "{\"name\":\"Smoke Dominio\",\"slug\":\"smoke-d-$RUN\",\"customDomain\":\"$DOM\",\"ownerEmail\":\"owner-d-$RUN@smoke.cl\",\"ownerName\":\"Owner D\",\"ownerPassword\":\"$OWNER_PASSWORD\"}" "")
+TD="$(jqr '.id')"
+assert_status 18.3a "crear tienda con dominio propio" 200 "$st"
+st=$(dom GET /health/tenant "$DOM")
+assert_eq 18.3b "el dominio propio resuelve" "$TD" "$(jqr '.tenantId')"
+st=$(dom GET /health/tenant "www.$DOM")
+assert_eq 18.3c "con www. (registró el dominio pelado)" "$TD" "$(jqr '.tenantId')"
+st=$(dom GET /health/tenant "panel.$DOM")
+assert_eq 18.3d "y el panel del cliente" "$TD" "$(jqr '.tenantId')"
+st=$(dom GET /health/tenant "smoke-d-$RUN.localhost")
+assert_eq 18.3e "el slug le sigue sirviendo igual" "$TD" "$(jqr '.tenantId')"
+st=$(dom GET /health/tenant "otro-$RUN.cl")
+assert_eq 18.3f "un dominio de nadie no resuelve" "no tenant resolved" "$(jqr '.message')"
+
+# --- la vidriera pública sale del dominio: es lo que ve el comprador ---
+st=$(dom GET "/products/$PROD_SIMPLE" "$SLUG_A.localhost")
+assert_status 18.4a "ficha de producto por dominio" 200 "$st"
+# Lo que prueba el aislamiento no es el 200 de arriba sino este 404: el mismo GUID, el
+# mismo backend, otro dominio, y el producto no existe.
+st=$(dom GET "/products/$PROD_SIMPLE" "$SLUG_B.localhost")
+assert_status 18.4b "el producto de A no existe bajo el dominio de B" 404 "$st"
+
+# --- login del staff por dominio: el camino real del panel ---
+JAR_DOM="$BODY.jar.dom"; touch "$JAR_DOM"
+st=$(dom POST /auth/staff/login "panel.$SLUG_A.localhost" \
+  "{\"email\":\"owner-a-$RUN@smoke.cl\",\"password\":\"$OWNER_PASSWORD\"}" "$JAR_DOM")
+assert_status 18.5a "login sin header de tenant, solo el dominio" 200 "$st"
+st=$(dom GET "/admin/orders/$TO" "panel.$SLUG_A.localhost" "" "$JAR_DOM")
+assert_status 18.5b "y esa sesión opera el panel de su tienda" 200 "$st"
+# ⭐ La garantía de 4.2, ahora expresada como lo que un atacante haría de verdad: no
+# inventar un header, sino apuntar la MISMA sesión al subdominio de otra tienda.
+#
+# Con el token crudo y no con el tarro: el navegador nunca mandaría esa cookie a otro
+# dominio, así que usar el tarro mediría la política de cookies del cliente y no la del
+# servidor. Acá el servidor recibe una credencial buena para la tienda equivocada, que es
+# exactamente lo que ve si a alguien le roban la cookie o la copia a mano.
+DTOK="$(awk '/lewik_panel_session/ {print $7}' "$JAR_DOM")"
+st=$(curl -s -o "$BODY" -w '%{http_code}' "$API/admin/orders/$TO" \
+  -H "Host: panel.$SLUG_B.localhost" -H "Cookie: lewik_panel_session=$DTOK")
+assert_status 18.5c "esa sesión contra el dominio de otra tienda" 403 "$st"
+# 403 y no 401: la credencial es válida: lo que no corresponde es la tienda.
+st=$(curl -s -o "$BODY" -w '%{http_code}' "$API/admin/orders/$TO" \
+  -H "Host: noexiste-$RUN.localhost" -H "Cookie: lewik_panel_session=$DTOK")
+assert_status 18.5d "y contra un dominio que no resuelve nada tampoco" 403 "$st"
+
+# --- suspender corta la tienda en el acto ---
+# Primero se calienta la caché a propósito: si estas rutas nunca se hubieran resuelto,
+# el 403 de más abajo saldría de un cache miss y no probaría nada sobre la invalidación.
+st=$(dom GET /products "smoke-d-$RUN.localhost"); assert_status 18.6a "la tienda D atiende" 200 "$st"
+st=$(dom GET /products "$DOM"); assert_status 18.6b "también por su dominio propio" 200 "$st"
+st=$(plat POST "/platform/stores/$TD/suspend" "" "")
+assert_eq 18.6c "el operador la suspende" "Suspended" "$(jqr '.status')"
+st=$(dom GET /products "smoke-d-$RUN.localhost")
+assert_title 18.6d "cortada al instante, no al vencer el TTL" 403 "platform.store_suspended" "$st"
+st=$(dom GET /products "$DOM")
+assert_title 18.6e "por su dominio propio también" 403 "platform.store_suspended" "$st"
+# El staff no se topa con una pared muda: llega al login y le dicen por qué.
+st=$(dom POST /auth/staff/login "panel.smoke-d-$RUN.localhost" \
+  "{\"email\":\"owner-d-$RUN@smoke.cl\",\"password\":\"$OWNER_PASSWORD\"}")
+assert_title 18.6f "el dueño llega al login y le explican" 409 "platform.store_suspended" "$st"
+st=$(dom GET /health/db "smoke-d-$RUN.localhost")
+assert_status 18.6g "health sigue arriba (suspendida no es rota)" 200 "$st"
+st=$(dom GET /health/entitlement "smoke-d-$RUN.localhost")
+assert_eq 18.6h "y el entitlement dice que no" "false" "$(jqr '.isActive')"
+st=$(plat POST "/platform/stores/$TD/activate" "" "")
+assert_eq 18.6i "reactivar" "Active" "$(jqr '.status')"
+st=$(dom GET /products "smoke-d-$RUN.localhost")
+assert_status 18.6j "y vuelve a atender en el acto" 200 "$st"
+
+# --- el entitlement ya no es un stub que decía que sí a cualquiera ---
+st=$(pub GET /health/entitlement "" "$TA")
+assert_eq 18.7a "entitlement de una tienda real" "true" "$(jqr '.isActive')"
+assert_eq 18.7b "sin plan inventado" "null" "$(jqr '.planCode')"
+# Con el stub esto devolvía 200 y "stub-pro" para cualquier GUID.
+st=$(pub GET /health/entitlement "" "$(guid)")
+assert_status 18.7c "un tenant que no existe no tiene entitlement" 404 "$st"
+
+# --- el header sigue existiendo, y en dev manda ---
+# Documenta la precedencia: si el header está habilitado, gana sobre el dominio. Por eso
+# la app se niega a arrancar con esto prendido fuera de Development.
+st=$(curl -s -o "$BODY" -w '%{http_code}' "$API/health/tenant" \
+  -H "Host: $SLUG_B.localhost" -H "X-Tenant-Id: $TA")
+assert_eq 18.8 "en dev el header le gana al dominio" "$TA" "$(jqr '.tenantId')"
 
 # =============================================================================
 section "RESUMEN"
