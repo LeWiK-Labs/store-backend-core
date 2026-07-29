@@ -23,7 +23,11 @@ runtime:
     - type: tests
       code: |-
         test("returns 200", function() { expect(res.status).to.equal(200); });
-        if (res.status === 200) { bru.setEnvVar("orderId", res.body); }
+        if (res.status === 200) {
+  bru.setEnvVar("orderId", res.body.orderId);
+  // Token de acceso del invitado: con esto ve y paga su pedido sin cuenta.
+  bru.setEnvVar("accessToken", res.body.accessToken);
+}
 settings:
   encodeUrl: true
 examples:

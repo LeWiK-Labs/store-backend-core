@@ -3,6 +3,7 @@ using LeWiK.Store.App.Catalog.Domain;
 using LeWiK.Store.App.Common.Messaging;
 using LeWiK.Store.App.Common.Persistence;
 using LeWiK.Store.App.Common.Results;
+using LeWiK.Store.App.Common.Security;
 using LeWiK.Store.App.Common.Tenancy;
 using LeWiK.Store.App.Customers.Domain;
 using LeWiK.Store.App.Inventory.Domain;
@@ -15,7 +16,12 @@ namespace LeWiK.Store.App.Orders;
 
 public sealed record CheckoutCommand(
     CustomerInfo Customer,
-    IReadOnlyList<CheckoutItem> Items) : ICommand<Guid>;
+    IReadOnlyList<CheckoutItem> Items) : ICommand<CheckoutResponse>;
+
+// The token is the guest's only handle on this order. Once order details stopped being
+// readable by bare id — a GUID in a URL was enough to read a stranger's personal data — a
+// buyer with no account needs something to hold, and this is it.
+public sealed record CheckoutResponse(Guid OrderId, string AccessToken);
 
 public sealed record CustomerInfo(string Email, string Phone, string? Name);
 public sealed record CheckoutItem(Guid ProductVariantId, int Quantity);
@@ -37,9 +43,9 @@ public sealed class CheckoutValidator : AbstractValidator<CheckoutCommand>
 }
 
 public sealed class CheckoutHandler(StoreDbContext db, ITenantContext tenant, PurchaseLimitEnforcer limitEnforcer)
-    : IRequestHandler<CheckoutCommand, Result<Guid>>
+    : IRequestHandler<CheckoutCommand, Result<CheckoutResponse>>
 {
-    public async Task<Result<Guid>> Handle(CheckoutCommand request, CancellationToken ct)
+    public async Task<Result<CheckoutResponse>> Handle(CheckoutCommand request, CancellationToken ct)
     {
         // Merge duplicate variants into a single line each.
         var items = request.Items
@@ -124,7 +130,14 @@ public sealed class CheckoutHandler(StoreDbContext db, ITenantContext tenant, Pu
         if (orderResult.IsFailure) return orderResult.Error;
 
         db.Add(orderResult.Value);
+
+        // Issued here rather than by a later admin action: the buyer needs it the instant the
+        // order exists, and there is nobody else in the loop to hand it to them. 60 days
+        // outlives any reasonable preorder wait.
+        var accessToken = OpaqueToken.Generate();
+        orderResult.Value.SetPaymentLink(OpaqueToken.Hash(accessToken), DateTime.UtcNow.AddDays(60));
+
         // UnitOfWorkBehavior commits everything atomically and dispatches domain events.
-        return orderResult.Value.Id;
+        return new CheckoutResponse(orderResult.Value.Id, accessToken);
     }
 }

@@ -15,23 +15,31 @@
 # no requiere base limpia. Sale con código != 0 si alguna aserción "dura" falla.
 # Las ZONAS DE RIESGO conocidas se reportan como WARN (no rompen el build).
 #
-# Las pruebas que afirman "pasarela sin configurar" corren sobre TENANTS EFÍMEROS
-# (GUID nuevo por corrida): las credenciales viven en la base y sobreviven entre
-# corridas, así que sobre $TA la aserción se rompía apenas alguien configuraba
-# Webpay de verdad. Contrapartida: cada corrida deja un tenant descartable con una
-# config de MercadoPago de juguete. Para limpiarlos en la base de desarrollo:
-#   DELETE FROM payment_method_configs
-#    WHERE tenant_id NOT IN ('11111111-1111-1111-1111-111111111111',
-#                            '22222222-2222-2222-2222-222222222222');
+# ---- Desde 4.3: el script se autentica ----------------------------------------
+# La gestión vive bajo /admin y exige sesión de staff + tenant match, así que ya no
+# alcanza con inventar un GUID en el header: el tenant tiene que ser una TIENDA de
+# verdad (staff_users tiene FK a stores). Por eso la sección 0 crea sus propias
+# tiendas vía /platform/stores y se loguea como sus dueños. Cada corrida deja dos
+# tiendas descartables; para limpiar la base de desarrollo:
+#   DELETE FROM stores WHERE slug LIKE 'smoke-%';   -- staff y sesiones caen por FK
+#
+# Requiere un PlatformOperator ya sembrado (Platform:SeedOperator* en appsettings).
+# Se puede apuntar a otro con OPERATOR_EMAIL / OPERATOR_PASSWORD.
 # =============================================================================
 set -u
 
 API="${API:-http://localhost:5223}"
-TA="${TA:-11111111-1111-1111-1111-111111111111}"   # tenant A
-TB="${TB:-22222222-2222-2222-2222-222222222222}"   # tenant B
+OPERATOR_EMAIL="${OPERATOR_EMAIL:-admin@lewik.cl}"
+OPERATOR_PASSWORD="${OPERATOR_PASSWORD:-cambiar-esto-ya-1234}"
+OWNER_PASSWORD="password-larga-123"
 RUN="$(date +%s)"
 BODY="$(mktemp)"
-trap 'rm -f "$BODY"' EXIT
+# Se llenan en la sección 0; declarados acá porque los helpers los usan por defecto.
+TA=""; TB=""
+JARP="$BODY.jar.platform"; JAR_A="$BODY.jar.a"; JAR_B="$BODY.jar.b"
+# touch: `curl -b` interpreta un archivo inexistente como una cookie literal.
+touch "$JARP" "$JAR_A" "$JAR_B"
+trap 'rm -f "$BODY" "$BODY".*' EXIT
 
 command -v jq >/dev/null 2>&1 || { echo "ERROR: jq no está instalado."; exit 2; }
 
@@ -45,21 +53,41 @@ warn() { WARN=$((WARN+1)); printf "  ${Y}WARN${Z} %-6s %s\n" "$1" "$2"; }
 section() { printf "\n${C}== %s ==${Z}\n" "$1"; }
 
 # ---- helpers HTTP -----------------------------------------------------------
-# req METHOD PATH [json] [tenant]   -> imprime el status; deja el body en $BODY
+# Tres formas de llamar, porque ahora hay tres poblaciones distintas:
+#   req  -> el panel: sesión de staff de la tienda A + header CSRF (lo más común)
+#   creq -> igual pero con un tarro de cookies explícito (otra tienda, un cajero,
+#           el operador de plataforma)
+#   pub  -> sin credenciales, como el navegador de un comprador
+# Que lo público tenga que pedirse con otro helper es a propósito: si una prueba
+# de superficie pública pasa usando req(), está pasando por la sesión y no prueba
+# nada.
+
+# req METHOD PATH [json] [tenant] [jar]  -> status en stdout, body en $BODY
 req() {
-  # OJO: usar ${4-...} (sin dos puntos) para que un tenant "" explícito quede vacío
-  # (con :- un string vacío se sustituye por $TA y rompe las pruebas "sin tenant").
-  local method="$1" path="$2" json="${3:-}" tenant="${4-$TA}"
-  local -a args=(-s -o "$BODY" -w '%{http_code}' -X "$method" "$API$path")
+  # OJO: ${4-...} sin dos puntos, para que un tenant "" explícito quede vacío
+  # (con :- un string vacío se sustituiría por $TA y rompería las pruebas "sin tenant").
+  local method="$1" path="$2" json="${3:-}" tenant="${4-$TA}" jar="${5-$JAR_A}"
+  local -a args=(-s -o "$BODY" -w '%{http_code}' -X "$method" "$API$path"
+                 -H "X-Requested-With: LeWiKPanel")
+  [ -n "$jar" ] && args+=(-b "$jar" -c "$jar")
   [ -n "$tenant" ] && args+=(-H "X-Tenant-Id: $tenant")
-  if [ -n "$json" ]; then args+=(-H "Content-Type: application/json" -d "$json"); fi
+  [ -n "$json" ] && args+=(-H "Content-Type: application/json" -d "$json")
   curl "${args[@]}"
 }
-# creq METHOD PATH [json] [tenant] JAR  -> igual que req, pero con tarro de cookies
+
+# creq METHOD PATH [json] [tenant] JAR
 # (-b lee, -c escribe: hace falta leer Y escribir para que login/uso/logout compartan sesión)
-creq() {
-  local method="$1" path="$2" json="${3:-}" tenant="${4-}" jar="$5"
-  local -a args=(-s -o "$BODY" -w '%{http_code}' -X "$method" "$API$path" -b "$jar" -c "$jar")
+creq() { req "$1" "$2" "${3:-}" "${4-}" "$5"; }
+
+# plat METHOD PATH [json]  -> como operador de plataforma (nunca lleva tenant).
+# Ignora argumentos de más, así que las llamadas que arrastran un "" de tenant
+# desde antes de 4.3 siguen sirviendo tal cual.
+plat() { creq "$1" "$2" "${3:-}" "" "$JARP"; }
+
+# pub METHOD PATH [json] [tenant]  -> anónimo, sin cookie ni CSRF
+pub() {
+  local method="$1" path="$2" json="${3:-}" tenant="${4-$TA}"
+  local -a args=(-s -o "$BODY" -w '%{http_code}' -X "$method" "$API$path")
   [ -n "$tenant" ] && args+=(-H "X-Tenant-Id: $tenant")
   [ -n "$json" ] && args+=(-H "Content-Type: application/json" -d "$json")
   curl "${args[@]}"
@@ -87,33 +115,78 @@ guid() {
 }
 
 # =============================================================================
-section "0 · Conectividad"
-st=$(req GET /health/db "" "$TA")
+section "0 · Bootstrap: plataforma, tiendas y sesiones"
+st=$(pub GET /health/db "" "")
 assert_status 0.1 "GET /health/db" 200 "$st"
-st=$(req GET /health/cache "" "$TA"); assert_eq 0.2 "cache ok (Redis)" "ok" "$(jqr '.cache')"
-st=$(req GET /health/tenant "" "$TA"); assert_eq 0.3 "tenant resuelto" "$TA" "$(jqr '.tenantId')"
-st=$(req GET /health/tenant "" ""); assert_eq 0.4 "sin tenant" "no tenant resolved" "$(jqr '.message')"
+st=$(pub GET /health/cache "" ""); assert_eq 0.2 "cache ok (Redis)" "ok" "$(jqr '.cache')"
+
+# El operador de plataforma es el único que puede crear tiendas.
+st=$(creq POST /auth/platform/login \
+  "{\"email\":\"$OPERATOR_EMAIL\",\"password\":\"$OPERATOR_PASSWORD\"}" "" "$JARP")
+if [ "$st" != "200" ]; then
+  ko 0.3 "login del operador de plataforma (HTTP $st) — sin esto no se puede correr nada"
+  echo "  Sembrá uno con Platform:SeedOperatorEmail/Password, o pasá OPERATOR_EMAIL/OPERATOR_PASSWORD."
+  exit 1
+fi
+ok 0.3 "login del operador de plataforma"
+
+# Dos tiendas nuevas por corrida. Antes de 4.3 acá había dos GUID inventados; ya no
+# sirven, porque el staff tiene FK a stores y sin tienda no hay con quién loguearse.
+mkstore() { # slug-suffix -> imprime el id de la tienda; deja el owner en owner-<suffix>@smoke.cl
+  creq POST /platform/stores \
+    "{\"name\":\"Smoke $1\",\"slug\":\"smoke-$1-$RUN\",\"ownerEmail\":\"owner-$1-$RUN@smoke.cl\",\"ownerName\":\"Owner $1\",\"ownerPassword\":\"$OWNER_PASSWORD\"}" \
+    "" "$JARP" >/dev/null
+  jqr '.id'
+}
+# Tienda descartable CON sesión, para las pruebas que necesitan una tienda donde
+# nadie configuró pasarelas todavía (las credenciales persisten entre corridas, así
+# que afirmar "sin configurar" sobre $TA daba un rojo falso apenas alguien probaba
+# Webpay de verdad). Imprime "<storeId> <jar>".
+#
+# El nombre lo pone quien llama, y no un contador: esto se invoca dentro de $( ),
+# que es un subshell, así que cualquier contador que incrementara acá se perdería
+# y la segunda tienda pediría el slug de la primera.
+mkstore_session() { # nombre -> "<storeId> <jar>"
+  local sid jar="$BODY.jar.$1"
+  sid="$(mkstore "$1")"
+  touch "$jar"
+  creq POST /auth/staff/login \
+    "{\"email\":\"owner-$1-$RUN@smoke.cl\",\"password\":\"$OWNER_PASSWORD\"}" "$sid" "$jar" >/dev/null
+  printf '%s %s\n' "$sid" "$jar"
+}
+
+TA="$(mkstore a)"; TB="$(mkstore b)"
+[ -n "$TA" ] && [ "$TA" != "null" ] && ok 0.4a "tienda A creada" || { ko 0.4a "no se pudo crear la tienda A"; exit 1; }
+[ -n "$TB" ] && [ "$TB" != "null" ] && ok 0.4b "tienda B creada" || { ko 0.4b "no se pudo crear la tienda B"; exit 1; }
+
+st=$(creq POST /auth/staff/login "{\"email\":\"owner-a-$RUN@smoke.cl\",\"password\":\"$OWNER_PASSWORD\"}" "$TA" "$JAR_A")
+assert_status 0.5a "login del dueño de A" 200 "$st"
+st=$(creq POST /auth/staff/login "{\"email\":\"owner-b-$RUN@smoke.cl\",\"password\":\"$OWNER_PASSWORD\"}" "$TB" "$JAR_B")
+assert_status 0.5b "login del dueño de B" 200 "$st"
+
+st=$(pub GET /health/tenant "" "$TA"); assert_eq 0.6 "tenant resuelto" "$TA" "$(jqr '.tenantId')"
+st=$(pub GET /health/tenant "" ""); assert_eq 0.7 "sin tenant" "no tenant resolved" "$(jqr '.message')"
 st=$(req POST "/hubs/store/negotiate?negotiateVersion=1" "{}" "$TA")
-[ "$(jqr '.connectionId')" != "null" ] && ok 0.5 "SignalR negotiate" || ko 0.5 "SignalR negotiate (HTTP $st)"
+[ "$(jqr '.connectionId')" != "null" ] && ok 0.8 "SignalR negotiate" || ko 0.8 "SignalR negotiate (HTTP $st)"
 
 section "1 · Catálogo: producto simple"
 SKU="BOX-SV01-$RUN"
-st=$(req POST /products "{\"sku\":\"$SKU\",\"name\":\"SV Booster Box\",\"description\":\"36 sobres\",\"price\":150000,\"currency\":\"CLP\"}")
+st=$(req POST /admin/products "{\"sku\":\"$SKU\",\"name\":\"SV Booster Box\",\"description\":\"36 sobres\",\"price\":150000,\"currency\":\"CLP\"}")
 PROD_SIMPLE="$(jqr '.')"; assert_status 1.1 "crear producto simple" 200 "$st"
 st=$(req GET "/products/$PROD_SIMPLE")
 VAR_SIMPLE="$(jqr '.variants[0].id')"
 assert_eq 1.2a "options vacío" "0" "$(jqr '.options | length')"
 assert_eq 1.2b "variante Default" "Default" "$(jqr '.variants[0].label')"
 assert_eq 1.2c "priceAmount" "150000" "$(jqnum '.variants[0].priceAmount')"
-st=$(req POST /products "{\"sku\":\"$SKU\",\"name\":\"dup\",\"price\":1,\"currency\":\"CLP\"}")
+st=$(req POST /admin/products "{\"sku\":\"$SKU\",\"name\":\"dup\",\"price\":1,\"currency\":\"CLP\"}")
 assert_title 1.3 "sku duplicado" 409 "catalog.duplicate_sku" "$st"
-st=$(req POST /products "{\"sku\":\"NODESC-$RUN\",\"name\":\"x\",\"price\":1000,\"currency\":\"CLP\"}")
+st=$(req POST /admin/products "{\"sku\":\"NODESC-$RUN\",\"name\":\"x\",\"price\":1000,\"currency\":\"CLP\"}")
 assert_status 1.4 "sin description (opcional)" 200 "$st"
-st=$(req POST /products "{\"sku\":\"EMPTY-$RUN\",\"name\":\"\",\"price\":1000,\"currency\":\"CLP\"}")
+st=$(req POST /admin/products "{\"sku\":\"EMPTY-$RUN\",\"name\":\"\",\"price\":1000,\"currency\":\"CLP\"}")
 assert_status 1.5 "name vacío" 400 "$st"
-st=$(req POST /products "{\"sku\":\"NEG-$RUN\",\"name\":\"n\",\"price\":-1,\"currency\":\"CLP\"}")
+st=$(req POST /admin/products "{\"sku\":\"NEG-$RUN\",\"name\":\"n\",\"price\":-1,\"currency\":\"CLP\"}")
 assert_status 1.6 "price -1" 400 "$st"
-st=$(req POST /products "{\"sku\":\"CUR-$RUN\",\"name\":\"c\",\"price\":1,\"currency\":\"CL\"}")
+st=$(req POST /admin/products "{\"sku\":\"CUR-$RUN\",\"name\":\"c\",\"price\":1,\"currency\":\"CL\"}")
 assert_status 1.7 "currency inválida" 400 "$st"
 st=$(req GET "/products/99999999-9999-9999-9999-999999999999")
 assert_title 1.8 "producto inexistente" 404 "catalog.product_not_found" "$st"
@@ -121,7 +194,7 @@ assert_title 1.8 "producto inexistente" 404 "catalog.product_not_found" "$st"
 section "2 · Catálogo: producto con options (matriz)"
 # NOTA: usamos valores ASCII (Ingles/Espanol) a propósito. El cuerpo debe ir en UTF-8;
 # si el shell/locale envía acentos como Latin-1, la API responde 500 (ver informe).
-st=$(req POST /products/with-options "{
+st=$(req POST /admin/products/with-options "{
   \"name\":\"Blister Paldea Evolved\",
   \"options\":[{\"name\":\"Carta\",\"values\":[\"Charizard\",\"Meganium\"]},{\"name\":\"Idioma\",\"values\":[\"Ingles\",\"Espanol\"]}],
   \"variants\":[
@@ -142,91 +215,96 @@ MAP=$(jq -r --arg a "$CHAR_ID" --arg b "$EN_ID" \
 assert_eq 2.4 "optionValueIds resuelven a Charizard+Ingles" "true" "$MAP"
 VAR_DROP=$(jq -r '.variants[] | select(.label=="Meganium / Ingles").id' "$BODY.blister")
 rm -f "$BODY.blister"
-st=$(req POST /products/with-options "{\"name\":\"b\",\"options\":[{\"name\":\"C\",\"values\":[\"A\",\"B\"]},{\"name\":\"I\",\"values\":[\"E\",\"S\"]}],\"variants\":[{\"sku\":\"B1-$RUN\",\"price\":1,\"currency\":\"CLP\",\"selections\":{\"C\":\"A\"}}]}")
+st=$(req POST /admin/products/with-options "{\"name\":\"b\",\"options\":[{\"name\":\"C\",\"values\":[\"A\",\"B\"]},{\"name\":\"I\",\"values\":[\"E\",\"S\"]}],\"variants\":[{\"sku\":\"B1-$RUN\",\"price\":1,\"currency\":\"CLP\",\"selections\":{\"C\":\"A\"}}]}")
 assert_title 2.5 "selección incompleta" 400 "catalog.incomplete_selection" "$st"
-st=$(req POST /products/with-options "{\"name\":\"b\",\"options\":[{\"name\":\"C\",\"values\":[\"A\",\"B\"]}],\"variants\":[{\"sku\":\"B2-$RUN\",\"price\":1,\"currency\":\"CLP\",\"selections\":{\"C\":\"Z\"}}]}")
+st=$(req POST /admin/products/with-options "{\"name\":\"b\",\"options\":[{\"name\":\"C\",\"values\":[\"A\",\"B\"]}],\"variants\":[{\"sku\":\"B2-$RUN\",\"price\":1,\"currency\":\"CLP\",\"selections\":{\"C\":\"Z\"}}]}")
 assert_title 2.6 "valor desconocido" 400 "catalog.unknown_selection" "$st"
-st=$(req POST /products/with-options "{\"name\":\"b\",\"options\":[{\"name\":\"C\",\"values\":[\"A\",\"B\"]}],\"variants\":[{\"sku\":\"B3a-$RUN\",\"price\":1,\"currency\":\"CLP\",\"selections\":{\"C\":\"A\"}},{\"sku\":\"B3b-$RUN\",\"price\":1,\"currency\":\"CLP\",\"selections\":{\"C\":\"A\"}}]}")
+st=$(req POST /admin/products/with-options "{\"name\":\"b\",\"options\":[{\"name\":\"C\",\"values\":[\"A\",\"B\"]}],\"variants\":[{\"sku\":\"B3a-$RUN\",\"price\":1,\"currency\":\"CLP\",\"selections\":{\"C\":\"A\"}},{\"sku\":\"B3b-$RUN\",\"price\":1,\"currency\":\"CLP\",\"selections\":{\"C\":\"A\"}}]}")
 assert_title 2.7 "combinación duplicada" 409 "catalog.duplicate_combination" "$st"
-st=$(req POST /products/with-options "{\"name\":\"b\",\"options\":[{\"name\":\"C\",\"values\":[\"A\",\"A\"]}],\"variants\":[{\"sku\":\"B4-$RUN\",\"price\":1,\"currency\":\"CLP\",\"selections\":{\"C\":\"A\"}}]}")
+st=$(req POST /admin/products/with-options "{\"name\":\"b\",\"options\":[{\"name\":\"C\",\"values\":[\"A\",\"A\"]}],\"variants\":[{\"sku\":\"B4-$RUN\",\"price\":1,\"currency\":\"CLP\",\"selections\":{\"C\":\"A\"}}]}")
 assert_title 2.8 "valores de opción duplicados" 400 "catalog.duplicate_option_value" "$st"
-st=$(req POST /products/with-options "{\"name\":\"b\",\"options\":[{\"name\":\"C\",\"values\":[\"A\"]}],\"variants\":[]}")
+st=$(req POST /admin/products/with-options "{\"name\":\"b\",\"options\":[{\"name\":\"C\",\"values\":[\"A\"]}],\"variants\":[]}")
 assert_status 2.9 "variants vacío" 400 "$st"
 
 section "3 · Aislamiento multi-tenant"
-st=$(req GET /products "" "$TB")
+st=$(pub GET /products "" "$TB")
 LEAK=$(jq -r --arg p "$PROD_SIMPLE" 'any(.[]; .id==$p)' "$BODY")
 assert_eq 3.1 "TB no ve productos de TA" "false" "$LEAK"
-st=$(req POST /products "{\"sku\":\"$SKU\",\"name\":\"tb\",\"price\":1,\"currency\":\"CLP\"}" "$TB")
+st=$(creq POST /admin/products "{\"sku\":\"$SKU\",\"name\":\"tb\",\"price\":1,\"currency\":\"CLP\"}" "$TB" "$JAR_B")
 assert_status 3.2 "sku único por tenant" 200 "$st"
-st=$(req GET "/products/$PROD_SIMPLE" "" "$TB"); assert_status 3.3 "TB no ve producto de A" 404 "$st"
-st=$(req GET "/variants/$VAR_SIMPLE/stock" "" "$TB"); assert_status 3.4 "TB no ve stock de A" 404 "$st"
-st=$(req POST /products "{\"sku\":\"NT-$RUN\",\"name\":\"x\",\"price\":1,\"currency\":\"CLP\"}" "")
-assert_status 3.5 "POST sin tenant" 400 "$st"
-st=$(req GET /products "" ""); assert_eq 3.6 "GET sin tenant = lista vacía" "0" "$(jqr 'length')"
+st=$(pub GET "/products/$PROD_SIMPLE" "" "$TB"); assert_status 3.3 "TB no ve producto de A" 404 "$st"
+st=$(pub GET "/variants/$VAR_SIMPLE/stock" "" "$TB"); assert_status 3.4 "TB no ve stock de A" 404 "$st"
+# Antes daba 400 "sin tenant": el guard del pipeline era lo único que miraba. Ahora
+# la política corta antes, y sin tenant resuelto el TenantMatch no puede pasar.
+st=$(req POST /admin/products "{\"sku\":\"NT-$RUN\",\"name\":\"x\",\"price\":1,\"currency\":\"CLP\"}" "")
+assert_status 3.5 "POST sin tenant" 403 "$st"
+st=$(pub GET /products "" ""); assert_eq 3.6 "GET sin tenant = lista vacía" "0" "$(jqr 'length')"
+# La sesión de A no opera la tienda B, aunque el header diga B.
+st=$(req POST /admin/products "{\"sku\":\"XT-$RUN\",\"name\":\"x\",\"price\":1,\"currency\":\"CLP\"}" "$TB")
+assert_status 3.7 "sesión de A contra tienda B" 403 "$st"
 
 section "4 · Inventario"
-st=$(req POST "/variants/$VAR_SIMPLE/stock" '{"quantity":10,"reason":"initial restock"}')
+st=$(req POST "/admin/variants/$VAR_SIMPLE/stock" '{"quantity":10,"reason":"initial restock"}')
 assert_eq 4.1 "stock inicial 10" "10" "$(jqr '.available')"
-st=$(req POST "/variants/$VAR_SIMPLE/stock" '{"quantity":5,"reason":"more"}')
+st=$(req POST "/admin/variants/$VAR_SIMPLE/stock" '{"quantity":5,"reason":"more"}')
 assert_eq 4.2 "acumula a 15" "15" "$(jqr '.available')"
 st=$(req GET "/variants/$VAR_SIMPLE/stock"); assert_eq 4.3 "GET stock 15" "15" "$(jqr '.available')"
 st=$(req GET "/variants/88888888-8888-8888-8888-888888888888/stock")
 assert_title 4.4 "sin inventario" 404 "inventory.not_found" "$st"
-st=$(req POST "/variants/$VAR_SIMPLE/stock" '{"quantity":0}'); assert_status 4.5 "quantity 0" 400 "$st"
-st=$(req POST "/variants/$VAR_SIMPLE/stock" '{"quantity":-5}'); assert_status 4.6 "quantity -5" 400 "$st"
-st=$(req POST "/variants/77777777-7777-7777-7777-777777777777/stock" '{"quantity":3}')
+st=$(req POST "/admin/variants/$VAR_SIMPLE/stock" '{"quantity":0}'); assert_status 4.5 "quantity 0" 400 "$st"
+st=$(req POST "/admin/variants/$VAR_SIMPLE/stock" '{"quantity":-5}'); assert_status 4.6 "quantity -5" 400 "$st"
+st=$(req POST "/admin/variants/77777777-7777-7777-7777-777777777777/stock" '{"quantity":3}')
 assert_title 4.7 "AddStock a variante inexistente rechazado" 404 "inventory.variant_not_found" "$st"
 
 section "5 · Preventas / drops"
 DROP='{"capacity":100,"releaseDate":"2026-09-01T00:00:00Z","depositType":"Percentage","depositValue":30}'
-st=$(req PUT "/variants/$VAR_DROP/preorder" "$DROP")
+st=$(req PUT "/admin/variants/$VAR_DROP/preorder" "$DROP")
 assert_eq 5.1a "capacity 100" "100" "$(jqr '.capacity')"
 assert_eq 5.1b "status Active" "Active" "$(jqr '.status')"
-st=$(req PUT "/variants/$VAR_DROP/preorder" '{"capacity":200,"releaseDate":"2026-09-01T00:00:00Z","depositType":"Percentage","depositValue":30}')
+st=$(req PUT "/admin/variants/$VAR_DROP/preorder" '{"capacity":200,"releaseDate":"2026-09-01T00:00:00Z","depositType":"Percentage","depositValue":30}')
 assert_eq 5.2 "upsert capacity 200" "200" "$(jqr '.capacity')"
 st=$(req GET "/variants/$VAR_DROP/preorder"); assert_status 5.3 "GET preorder" 200 "$st"
 st=$(req GET "/variants/$VAR_SIMPLE/preorder"); assert_title 5.4 "sin drop" 404 "preorder.not_found" "$st"
-st=$(req PUT "/variants/$VAR_DROP/preorder" '{"capacity":100,"releaseDate":"2026-09-01T00:00:00Z","depositType":"Percentage","depositValue":150}')
+st=$(req PUT "/admin/variants/$VAR_DROP/preorder" '{"capacity":100,"releaseDate":"2026-09-01T00:00:00Z","depositType":"Percentage","depositValue":150}')
 assert_status 5.5 "porcentaje 150 fuera de rango" 400 "$st"
-st=$(req PUT "/variants/$VAR_DROP/preorder" '{"capacity":100,"releaseDate":"2026-09-01T00:00:00Z","depositType":"FixedPerUnit","depositValue":5000}')
+st=$(req PUT "/admin/variants/$VAR_DROP/preorder" '{"capacity":100,"releaseDate":"2026-09-01T00:00:00Z","depositType":"FixedPerUnit","depositValue":5000}')
 assert_status 5.6 "FixedPerUnit 5000" 200 "$st"
-st=$(req PUT "/variants/$VAR_DROP/preorder" '{"capacity":0,"releaseDate":"2026-09-01T00:00:00Z","depositType":"Percentage","depositValue":30}')
+st=$(req PUT "/admin/variants/$VAR_DROP/preorder" '{"capacity":0,"releaseDate":"2026-09-01T00:00:00Z","depositType":"Percentage","depositValue":30}')
 assert_status 5.8 "capacity 0" 400 "$st"
-st=$(req PUT "/variants/$VAR_DROP/preorder" '{"capacity":100,"releaseDate":"2026-09-01T00:00:00Z","depositType":"Porcentaje","depositValue":30}')
+st=$(req PUT "/admin/variants/$VAR_DROP/preorder" '{"capacity":100,"releaseDate":"2026-09-01T00:00:00Z","depositType":"Porcentaje","depositValue":30}')
 assert_title 5.9 "enum inválido -> 400 (F3)" 400 "request.invalid_body" "$st"
 # dejar configurado Percentage/30 capacity 100 para el escenario 10
-req PUT "/variants/$VAR_DROP/preorder" "$DROP" >/dev/null
+req PUT "/admin/variants/$VAR_DROP/preorder" "$DROP" >/dev/null
 
 section "6 · Límites anti-scalping (config)"
-st=$(req PUT "/products/$PROD_SIMPLE/purchase-limit" '{"maxPerOrder":5,"maxPerCustomer":5,"windowDays":30}')
+st=$(req PUT "/admin/products/$PROD_SIMPLE/purchase-limit" '{"maxPerOrder":5,"maxPerCustomer":5,"windowDays":30}')
 assert_eq 6.1 "scope Product" "Product" "$(jqr '.scope')"
-st=$(req PUT "/variants/$VAR_SIMPLE/purchase-limit" '{"maxPerOrder":2,"maxPerCustomer":3,"windowDays":30}')
+st=$(req PUT "/admin/variants/$VAR_SIMPLE/purchase-limit" '{"maxPerOrder":2,"maxPerCustomer":3,"windowDays":30}')
 assert_eq 6.2 "scope Variant" "Variant" "$(jqr '.scope')"
-st=$(req PUT "/products/$PROD_SIMPLE/purchase-limit" '{"windowDays":30}')
+st=$(req PUT "/admin/products/$PROD_SIMPLE/purchase-limit" '{"windowDays":30}')
 assert_status 6.4 "sin ningún máximo" 400 "$st"
-st=$(req PUT "/products/$PROD_SIMPLE/purchase-limit" '{"maxPerOrder":0}')
+st=$(req PUT "/admin/products/$PROD_SIMPLE/purchase-limit" '{"maxPerOrder":0}')
 assert_status 6.5 "maxPerOrder 0" 400 "$st"
 # probe aparte para no ensuciar el límite real de PROD_SIMPLE
-st=$(req POST /products "{\"sku\":\"LIM-$RUN\",\"name\":\"probe\",\"price\":100,\"currency\":\"CLP\"}"); PROBE="$(jqr '.')"
-st=$(req PUT "/products/$PROBE/purchase-limit" '{"maxPerOrder":2}')
+st=$(req POST /admin/products "{\"sku\":\"LIM-$RUN\",\"name\":\"probe\",\"price\":100,\"currency\":\"CLP\"}"); PROBE="$(jqr '.')"
+st=$(req PUT "/admin/products/$PROBE/purchase-limit" '{"maxPerOrder":2}')
 assert_eq 6.6 "solo maxPerOrder -> windowDays null" "null" "$(jqr '.windowDays')"
-st=$(req PUT "/products/$PROBE/purchase-limit" '{"maxPerCustomer":null,"windowDays":30,"maxPerOrder":4}')
+st=$(req PUT "/admin/products/$PROBE/purchase-limit" '{"maxPerCustomer":null,"windowDays":30,"maxPerOrder":4}')
 assert_eq 6.6b "sin cap por cliente anula ventana" "null" "$(jqr '.windowDays')"
-st=$(req GET "/products/$PROD_BLISTER/purchase-limit")
+st=$(req GET "/admin/products/$PROD_BLISTER/purchase-limit")
 assert_title 6.7 "producto sin política" 404 "catalog.no_purchase_limit" "$st"
 # restaurar límite conocido de PROD_SIMPLE
-req PUT "/products/$PROD_SIMPLE/purchase-limit" '{"maxPerOrder":5,"maxPerCustomer":5,"windowDays":30}' >/dev/null
+req PUT "/admin/products/$PROD_SIMPLE/purchase-limit" '{"maxPerOrder":5,"maxPerCustomer":5,"windowDays":30}' >/dev/null
 
 # helper de checkout
 checkout() { # email variant qty  -> status; body en $BODY
-  req POST /orders "{\"customer\":{\"email\":\"$1\",\"phone\":\"+56911111111\"},\"items\":[{\"productVariantId\":\"$2\",\"quantity\":$3}]}"
+  pub POST /orders "{\"customer\":{\"email\":\"$1\",\"phone\":\"+56911111111\"},\"items\":[{\"productVariantId\":\"$2\",\"quantity\":$3}]}"
 }
 
 section "7 · Checkout desde stock"
-st=$(checkout "cliente-$RUN@test.cl" "$VAR_SIMPLE" 2); ORDER="$(jqr '.')"
+st=$(checkout "cliente-$RUN@test.cl" "$VAR_SIMPLE" 2); ORDER="$(jqr '.orderId')"
 assert_status 7.1 "checkout qty 2" 200 "$st"
-st=$(req GET "/orders/$ORDER"); LINE="$(jqr '.lines[0].id')"
+st=$(req GET "/admin/orders/$ORDER"); LINE="$(jqr '.lines[0].id')"
 assert_eq 7.2a "fulfillmentStatus" "PendingPayment" "$(jqr '.fulfillmentStatus')"
 assert_eq 7.2b "total 300000" "300000" "$(jqnum '.total')"
 assert_eq 7.2c "depositDue == total (línea stock)" "300000" "$(jqnum '.depositDue')"
@@ -236,138 +314,137 @@ assert_eq 7.4a "reservado 2" "2" "$(jqr '.reserved')"
 assert_eq 7.4b "disponible 13" "13" "$(jqr '.available')"
 st=$(checkout "nov-$RUN@test.cl" "66666666-6666-6666-6666-666666666666" 1)
 assert_title 7.6 "variante inexistente" 404 "order.variant_not_found" "$st"
-st=$(req POST /orders "{\"customer\":{\"email\":\"empty-$RUN@test.cl\",\"phone\":\"+56911111111\"},\"items\":[]}")
+st=$(pub POST /orders "{\"customer\":{\"email\":\"empty-$RUN@test.cl\",\"phone\":\"+56911111111\"},\"items\":[]}")
 assert_status 7.8 "items vacío" 400 "$st"
-st=$(req POST /orders "{\"customer\":{\"email\":\"bad\",\"phone\":\"+56911111111\"},\"items\":[{\"productVariantId\":\"$VAR_SIMPLE\",\"quantity\":1}]}")
+st=$(pub POST /orders "{\"customer\":{\"email\":\"bad\",\"phone\":\"+56911111111\"},\"items\":[{\"productVariantId\":\"$VAR_SIMPLE\",\"quantity\":1}]}")
 assert_status 7.9 "email inválido" 400 "$st"
 # 7.10 merge de items duplicados (email fresco para no chocar con el límite por cliente)
-st=$(req POST /orders "{\"customer\":{\"email\":\"merge-$RUN@test.cl\",\"phone\":\"+56911111111\"},\"items\":[{\"productVariantId\":\"$VAR_SIMPLE\",\"quantity\":1},{\"productVariantId\":\"$VAR_SIMPLE\",\"quantity\":1}]}")
-MID="$(jqr '.')"; req GET "/orders/$MID" >/dev/null
+st=$(pub POST /orders "{\"customer\":{\"email\":\"merge-$RUN@test.cl\",\"phone\":\"+56911111111\"},\"items\":[{\"productVariantId\":\"$VAR_SIMPLE\",\"quantity\":1},{\"productVariantId\":\"$VAR_SIMPLE\",\"quantity\":1}]}")
+MID="$(jqr '.orderId')"; req GET "/admin/orders/$MID" >/dev/null
 assert_eq 7.10 "items duplicados se fusionan" "2" "$(jqr '.lines[0].qtyOrdered')"
 # 7.11 reusar email -> mismo customer
-st=$(checkout "cliente-$RUN@test.cl" "$VAR_SIMPLE" 1); O2="$(jqr '.')"
-req GET "/orders/$ORDER"  >/dev/null; C1="$(jqr '.customerId')"
-req GET "/orders/$O2"     >/dev/null; C2="$(jqr '.customerId')"
+st=$(checkout "cliente-$RUN@test.cl" "$VAR_SIMPLE" 1); O2="$(jqr '.orderId')"
+req GET "/admin/orders/$ORDER"  >/dev/null; C1="$(jqr '.customerId')"
+req GET "/admin/orders/$O2"     >/dev/null; C2="$(jqr '.customerId')"
 assert_eq 7.11 "mismo email -> mismo customerId" "$C1" "$C2"
 
 section "8 · Enforcement anti-scalping"
 SC="scalper-$RUN@test.cl"
 st=$(checkout "$SC" "$VAR_SIMPLE" 3); assert_title 8.1 "3 > maxPerOrder 2" 409 "order.limit_per_order" "$st"
-st=$(checkout "$SC" "$VAR_SIMPLE" 2); SCO="$(jqr '.')"; assert_status 8.2 "2 dentro del límite" 200 "$st"
+st=$(checkout "$SC" "$VAR_SIMPLE" 2); SCO="$(jqr '.orderId')"; assert_status 8.2 "2 dentro del límite" 200 "$st"
 st=$(checkout "$SC" "$VAR_SIMPLE" 2); assert_title 8.3 "2+2>3 por cliente" 409 "order.limit_per_customer" "$st"
 st=$(checkout "$SC" "$VAR_SIMPLE" 1); assert_status 8.4 "2+1=3 justo" 200 "$st"
 st=$(checkout "$SC" "$VAR_SIMPLE" 1); assert_title 8.5 "3+1>3" 409 "order.limit_per_customer" "$st"
 st=$(checkout "otro-$RUN@test.cl" "$VAR_SIMPLE" 1); assert_status 8.6 "otro cliente ok" 200 "$st"
-req POST "/orders/$SCO/cancel" >/dev/null
+req POST "/admin/orders/$SCO/cancel" >/dev/null
 st=$(checkout "$SC" "$VAR_SIMPLE" 2); assert_status 8.7 "cancelados no cuentan en historial" 200 "$st"
 
 section "9 · Ciclo de vida del pedido (stock)"
-st=$(req POST "/orders/$ORDER/prepare"); assert_title 9.1 "prepare antes de pagar" 409 "order.invalid_transition" "$st"
-st=$(req POST "/orders/$ORDER/payments" '{"amount":500000}'); assert_title 9.2 "pago > balance" 409 "order.payment_exceeds_balance" "$st"
-st=$(req POST "/orders/$ORDER/payments" '{"amount":100000}')
+st=$(req POST "/admin/orders/$ORDER/prepare"); assert_title 9.1 "prepare antes de pagar" 409 "order.invalid_transition" "$st"
+st=$(req POST "/admin/orders/$ORDER/payments" '{"amount":500000}'); assert_title 9.2 "pago > balance" 409 "order.payment_exceeds_balance" "$st"
+st=$(req POST "/admin/orders/$ORDER/payments" '{"amount":100000}')
 assert_eq 9.3a "pago parcial -> Deposited" "Deposited" "$(jqr '.paymentStatus')"
 assert_eq 9.3b "balance 200000" "200000" "$(jqnum '.balance')"
-st=$(req POST "/orders/$ORDER/payments" '{"amount":200000}')
+st=$(req POST "/admin/orders/$ORDER/payments" '{"amount":200000}')
 assert_eq 9.4 "pago total -> Paid" "Paid" "$(jqr '.paymentStatus')"
 # 9.5 ZONA DE RIESGO 2: en pedido SOLO-stock, el pago parcial ya lo empujó a AwaitingRelease
 # F1: pedido solo-stock queda 'Paid' tras pago total (nunca en AwaitingRelease)
-req GET "/orders/$ORDER" >/dev/null
+req GET "/admin/orders/$ORDER" >/dev/null
 assert_eq 9.5 "solo-stock -> Paid tras pago total (F1)" "Paid" "$(jqr '.fulfillmentStatus')"
-st=$(req POST "/orders/$ORDER/payments" '{"amount":1}'); assert_title 9.6 "pagar de nuevo" 409 "order.already_paid" "$st"
-st=$(req POST "/orders/$ORDER/prepare"); assert_eq 9.7 "prepare -> Preparing (F1)" "Preparing" "$(jqr '.fulfillmentStatus')"
-st=$(req POST "/orders/$ORDER/lines/$LINE/fulfill" '{"quantity":1}')
+st=$(req POST "/admin/orders/$ORDER/payments" '{"amount":1}'); assert_title 9.6 "pagar de nuevo" 409 "order.already_paid" "$st"
+st=$(req POST "/admin/orders/$ORDER/prepare"); assert_eq 9.7 "prepare -> Preparing (F1)" "Preparing" "$(jqr '.fulfillmentStatus')"
+st=$(req POST "/admin/orders/$ORDER/lines/$LINE/fulfill" '{"quantity":1}')
 assert_eq 9.8 "entrega parcial -> PartiallyDelivered" "PartiallyDelivered" "$(jqr '.fulfillmentStatus')"
-st=$(req POST "/orders/$ORDER/lines/$LINE/fulfill" '{"quantity":5}')
+st=$(req POST "/admin/orders/$ORDER/lines/$LINE/fulfill" '{"quantity":5}')
 assert_title 9.10 "fulfill excede pendiente" 409 "order.fulfill_exceeds_pending" "$st"
-st=$(req POST "/orders/$ORDER/lines/$LINE/fulfill" '{"quantity":1}')
+st=$(req POST "/admin/orders/$ORDER/lines/$LINE/fulfill" '{"quantity":1}')
 assert_eq 9.11 "entrega total -> Delivered" "Delivered" "$(jqr '.fulfillmentStatus')"
-st=$(req POST "/orders/$ORDER/cancel"); assert_title 9.13 "cancelar entregado" 409 "order.cannot_cancel_delivered" "$st"
-st=$(req POST "/orders/$ORDER/lines/12345678-1234-1234-1234-123456789abc/fulfill" '{"quantity":1}')
+st=$(req POST "/admin/orders/$ORDER/cancel"); assert_title 9.13 "cancelar entregado" 409 "order.cannot_cancel_delivered" "$st"
+st=$(req POST "/admin/orders/$ORDER/lines/12345678-1234-1234-1234-123456789abc/fulfill" '{"quantity":1}')
 assert_title 9.14 "línea inexistente" 404 "order.line_not_found" "$st"
 
 section "10 · Preventa con abono (drop)"
-st=$(req POST /orders "{\"customer\":{\"email\":\"drop-$RUN@test.cl\",\"phone\":\"+56922222222\"},\"items\":[{\"productVariantId\":\"$VAR_DROP\",\"quantity\":2}]}")
-ORDER_DROP="$(jqr '.')"; assert_status 10.1 "checkout preventa qty 2" 200 "$st"
-st=$(req GET "/orders/$ORDER_DROP"); DLINE="$(jqr '.lines[0].id')"
+st=$(pub POST /orders "{\"customer\":{\"email\":\"drop-$RUN@test.cl\",\"phone\":\"+56922222222\"},\"items\":[{\"productVariantId\":\"$VAR_DROP\",\"quantity\":2}]}")
+ORDER_DROP="$(jqr '.orderId')"; assert_status 10.1 "checkout preventa qty 2" 200 "$st"
+st=$(req GET "/admin/orders/$ORDER_DROP"); DLINE="$(jqr '.lines[0].id')"
 assert_eq 10.2a "total 23980" "23980" "$(jqnum '.total')"
 assert_eq 10.2b "depositDue 7194 (30%)" "7194" "$(jqnum '.depositDue')"
 assert_eq 10.2c "isPreorder true" "true" "$(jqr '.lines[0].isPreorder')"
 st=$(req GET "/variants/$VAR_DROP/preorder"); assert_eq 10.3 "soldCount 2" "2" "$(jqr '.soldCount')"
 st=$(req GET "/variants/$VAR_DROP/stock"); assert_status 10.4 "sin inventario (venta contra cupo)" 404 "$st"
-st=$(req POST "/orders/$ORDER_DROP/payments" '{"amount":7194}')
+st=$(req POST "/admin/orders/$ORDER_DROP/payments" '{"amount":7194}')
 assert_eq 10.5a "abono -> Deposited" "Deposited" "$(jqr '.paymentStatus')"
 assert_eq 10.5b "-> AwaitingRelease" "AwaitingRelease" "$(jqr '.fulfillmentStatus')"
-st=$(req POST "/orders/$ORDER_DROP/release"); assert_title 10.6 "release con saldo" 409 "order.balance_pending" "$st"
-st=$(req POST "/orders/$ORDER_DROP/payments" '{"amount":16786}'); assert_eq 10.7 "saldo -> Paid" "Paid" "$(jqr '.paymentStatus')"
+st=$(req POST "/admin/orders/$ORDER_DROP/release"); assert_title 10.6 "release con saldo" 409 "order.balance_pending" "$st"
+st=$(req POST "/admin/orders/$ORDER_DROP/payments" '{"amount":16786}'); assert_eq 10.7 "saldo -> Paid" "Paid" "$(jqr '.paymentStatus')"
 # F2: release exige que el stock del drop ya haya llegado (conversión cupo -> stock físico)
-st=$(req POST "/orders/$ORDER_DROP/release"); assert_title 10.8a "release sin restock" 409 "order.preorder_stock_missing" "$st"
-req POST "/variants/$VAR_DROP/stock" '{"quantity":2,"reason":"drop arrived"}' >/dev/null
-st=$(req POST "/orders/$ORDER_DROP/release"); assert_eq 10.8b "release tras restock -> Paid" "Paid" "$(jqr '.fulfillmentStatus')"
+st=$(req POST "/admin/orders/$ORDER_DROP/release"); assert_title 10.8a "release sin restock" 409 "order.preorder_stock_missing" "$st"
+req POST "/admin/variants/$VAR_DROP/stock" '{"quantity":2,"reason":"drop arrived"}' >/dev/null
+st=$(req POST "/admin/orders/$ORDER_DROP/release"); assert_eq 10.8b "release tras restock -> Paid" "Paid" "$(jqr '.fulfillmentStatus')"
 req GET "/variants/$VAR_DROP/stock" >/dev/null; assert_eq 10.8c "release reserva el stock del drop" "2" "$(jqr '.reserved')"
-st=$(req POST "/orders/$ORDER_DROP/prepare"); assert_eq 10.9 "prepare -> Preparing" "Preparing" "$(jqr '.fulfillmentStatus')"
+st=$(req POST "/admin/orders/$ORDER_DROP/prepare"); assert_eq 10.9 "prepare -> Preparing" "Preparing" "$(jqr '.fulfillmentStatus')"
 # 10.10 (post-F2): fulfill de preventa consume la reserva real; soldCount NO cambia (cupo consumido)
-st=$(req POST "/orders/$ORDER_DROP/lines/$DLINE/fulfill" '{"quantity":2}')
+st=$(req POST "/admin/orders/$ORDER_DROP/lines/$DLINE/fulfill" '{"quantity":2}')
 assert_eq 10.10a "fulfill preventa -> Delivered" "Delivered" "$(jqr '.fulfillmentStatus')"
 req GET "/variants/$VAR_DROP/stock" >/dev/null
 assert_eq 10.10b "stock consumido (reserved 0)" "0" "$(jqr '.reserved')"
 req GET "/variants/$VAR_DROP/preorder" >/dev/null
 assert_eq 10.10c "soldCount SIN cambios (cupo consumido)" "2" "$(jqr '.soldCount')"
-st=$(req POST /orders "{\"customer\":{\"email\":\"dropover-$RUN@test.cl\",\"phone\":\"+56922222222\"},\"items\":[{\"productVariantId\":\"$VAR_DROP\",\"quantity\":100000}]}")
+st=$(pub POST /orders "{\"customer\":{\"email\":\"dropover-$RUN@test.cl\",\"phone\":\"+56922222222\"},\"items\":[{\"productVariantId\":\"$VAR_DROP\",\"quantity\":100000}]}")
 assert_title 10.11 "excede cupo" 409 "preorder.capacity_exceeded" "$st"
 
 section "11 · Cancelación y liberación de reservas"
 req GET "/variants/$VAR_SIMPLE/stock" >/dev/null; A0="$(jqr '.available')"; R0="$(jqr '.reserved')"
-st=$(checkout "cancel-$RUN@test.cl" "$VAR_SIMPLE" 2); CO="$(jqr '.')"
+st=$(checkout "cancel-$RUN@test.cl" "$VAR_SIMPLE" 2); CO="$(jqr '.orderId')"
 req GET "/variants/$VAR_SIMPLE/stock" >/dev/null
 assert_eq 11.1 "reserva +2" "$((R0+2))" "$(jqr '.reserved')"
-st=$(req POST "/orders/$CO/cancel"); assert_eq 11.2 "cancel -> Cancelled" "Cancelled" "$(jqr '.fulfillmentStatus')"
+st=$(req POST "/admin/orders/$CO/cancel"); assert_eq 11.2 "cancel -> Cancelled" "Cancelled" "$(jqr '.fulfillmentStatus')"
 req GET "/variants/$VAR_SIMPLE/stock" >/dev/null
 assert_eq 11.3a "available restaurado" "$A0" "$(jqr '.available')"
 assert_eq 11.3b "reserved restaurado" "$R0" "$(jqr '.reserved')"
-st=$(req POST "/orders/$CO/cancel"); assert_title 11.4 "cancelar de nuevo" 409 "order.cancelled" "$st"
-st=$(req POST "/orders/$CO/payments" '{"amount":1000}'); assert_title 11.5 "pagar cancelado" 409 "order.cancelled" "$st"
+st=$(req POST "/admin/orders/$CO/cancel"); assert_title 11.4 "cancelar de nuevo" 409 "order.cancelled" "$st"
+st=$(req POST "/admin/orders/$CO/payments" '{"amount":1000}'); assert_title 11.5 "pagar cancelado" 409 "order.cancelled" "$st"
 # 11.6 cancelar preventa restaura soldCount
 req GET "/variants/$VAR_DROP/preorder" >/dev/null; SD0="$(jqr '.soldCount')"
-st=$(req POST /orders "{\"customer\":{\"email\":\"cancelpre-$RUN@test.cl\",\"phone\":\"+56922222222\"},\"items\":[{\"productVariantId\":\"$VAR_DROP\",\"quantity\":3}]}"); PO="$(jqr '.')"
-req POST "/orders/$PO/cancel" >/dev/null
+st=$(pub POST /orders "{\"customer\":{\"email\":\"cancelpre-$RUN@test.cl\",\"phone\":\"+56922222222\"},\"items\":[{\"productVariantId\":\"$VAR_DROP\",\"quantity\":3}]}"); PO="$(jqr '.orderId')"
+req POST "/admin/orders/$PO/cancel" >/dev/null
 req GET "/variants/$VAR_DROP/preorder" >/dev/null
 assert_eq 11.6 "soldCount vuelve a $SD0" "$SD0" "$(jqr '.soldCount')"
 
 section "12 · Pagos por transferencia"
-st=$(req PUT /payment-methods/Transfer '{"credentialsJson":"{\"banco\":\"Banco Estado\",\"numero\":\"123456789\",\"titular\":\"TCG Store SpA\"}"}')
+st=$(req PUT /admin/payment-methods/Transfer '{"credentialsJson":"{\"banco\":\"Banco Estado\",\"numero\":\"123456789\",\"titular\":\"TCG Store SpA\"}"}')
 assert_eq 12.1a "gateway Transfer activo" "Transfer" "$(jqr '.gateway')"
 assert_eq 12.1b "sin devolver credenciales" "null" "$(jqr '.credentialsJson')"
-st=$(checkout "transfer-$RUN@test.cl" "$VAR_SIMPLE" 1); TO="$(jqr '.')"
-req GET "/orders/$TO" >/dev/null; BAL="$(jqr '.balance')"
-st=$(req POST "/orders/$TO/payments/initiate" '{"gateway":"Transfer","type":"Full"}')
+st=$(checkout "transfer-$RUN@test.cl" "$VAR_SIMPLE" 1); TO="$(jqr '.orderId')"
+req GET "/admin/orders/$TO" >/dev/null; BAL="$(jqr '.balance')"
+st=$(pub POST "/orders/$TO/payments/initiate" '{"gateway":"Transfer","type":"Full"}')
 PID="$(jqr '.paymentId')"
 assert_eq 12.2a "amount == balance" "$BAL" "$(jqr '.amount')"
 assert_eq 12.2b "redirectUrl null" "null" "$(jqr '.redirectUrl')"
 [ "$(jqr '.bankDetails')" != "null" ] && ok 12.2c "bankDetails presente" || ko 12.2c "bankDetails ausente"
-st=$(req POST "/payments/$PID/confirm" '{"externalReference":"TRF-001"}')
+st=$(req POST "/admin/payments/$PID/confirm" '{"externalReference":"TRF-001"}')
 assert_eq 12.3a "paymentState Succeeded" "Succeeded" "$(jqr '.paymentState')"
 assert_eq 12.3b "orderPaymentStatus Paid" "Paid" "$(jqr '.orderPaymentStatus')"
 assert_eq 12.3c "orderBalance 0" "0" "$(jqnum '.orderBalance')"
-st=$(req POST "/payments/$PID/confirm" '{"externalReference":"TRF-001"}')
+st=$(req POST "/admin/payments/$PID/confirm" '{"externalReference":"TRF-001"}')
 assert_title 12.4 "idempotencia (doble confirm)" 409 "payment.already_resolved" "$st"
-req GET "/orders/$TO" >/dev/null; assert_eq 12.5 "balance sin cambios" "0" "$(jqnum '.balance')"
-# Tenant efímero: recién creado no tiene ninguna pasarela configurada, así que la
-# aserción vale sin importar qué haya en la base. Usar $TA acá daba un falso rojo
-# apenas alguien configuraba Webpay de verdad (la config persiste entre corridas).
-TC="$(guid)"
-req POST /products "{\"sku\":\"NOGW-$RUN\",\"name\":\"Sin pasarelas\",\"price\":9000,\"currency\":\"CLP\"}" "$TC" >/dev/null
+req GET "/admin/orders/$TO" >/dev/null; assert_eq 12.5 "balance sin cambios" "0" "$(jqnum '.balance')"
+# Tienda efímera: recién creada no tiene ninguna pasarela configurada, así que la
+# aserción vale sin importar qué haya en la base.
+read -r TC JAR_C <<< "$(mkstore_session nogw)"
+creq POST /admin/products "{\"sku\":\"NOGW-$RUN\",\"name\":\"Sin pasarelas\",\"price\":9000,\"currency\":\"CLP\"}" "$TC" "$JAR_C" >/dev/null
 PROD_NOGW="$(jqr '.')"
-req GET "/products/$PROD_NOGW" "" "$TC" >/dev/null; VAR_NOGW="$(jqr '.variants[0].id')"
-req POST "/variants/$VAR_NOGW/stock" '{"quantity":1}' "$TC" >/dev/null
-req POST /orders "{\"customer\":{\"email\":\"nogw-$RUN@test.cl\",\"phone\":\"+56911111111\"},\"items\":[{\"productVariantId\":\"$VAR_NOGW\",\"quantity\":1}]}" "$TC" >/dev/null
-WO="$(jqr '.')"
-st=$(req POST "/orders/$WO/payments/initiate" '{"gateway":"Webpay","type":"Full"}' "$TC")
+pub GET "/products/$PROD_NOGW" "" "$TC" >/dev/null; VAR_NOGW="$(jqr '.variants[0].id')"
+creq POST "/admin/variants/$VAR_NOGW/stock" '{"quantity":1}' "$TC" "$JAR_C" >/dev/null
+pub POST /orders "{\"customer\":{\"email\":\"nogw-$RUN@test.cl\",\"phone\":\"+56911111111\"},\"items\":[{\"productVariantId\":\"$VAR_NOGW\",\"quantity\":1}]}" "$TC" >/dev/null
+WO="$(jqr '.orderId')"
+st=$(pub POST "/orders/$WO/payments/initiate" '{"gateway":"Webpay","type":"Full"}' "$TC")
 assert_title 12.6a "Webpay sin configurar" 409 "payment.gateway_not_configured" "$st"
-st=$(req POST "/orders/$WO/payments/initiate" '{"gateway":"MercadoPago","type":"Full"}' "$TC")
+st=$(pub POST "/orders/$WO/payments/initiate" '{"gateway":"MercadoPago","type":"Full"}' "$TC")
 assert_title 12.6b "MercadoPago sin configurar" 409 "payment.gateway_not_configured" "$st"
-st=$(req POST "/orders/$TO/payments/initiate" '{"gateway":"Transfer","type":"Full"}')
+st=$(pub POST "/orders/$TO/payments/initiate" '{"gateway":"Transfer","type":"Full"}')
 assert_title 12.7 "initiate sobre pagado" 409 "order.already_paid" "$st"
-st=$(req POST "/payments/00000000-0000-0000-0000-000000000001/confirm" '{"externalReference":"x"}')
+st=$(req POST "/admin/payments/00000000-0000-0000-0000-000000000001/confirm" '{"externalReference":"x"}')
 assert_title 12.8 "payment inexistente" 404 "payment.not_found" "$st"
 
 # =============================================================================
@@ -377,7 +454,7 @@ assert_title 12.8 "payment inexistente" 404 "payment.not_found" "$st"
 # parcial, idempotencia, que PaymentStatus NO retroceda) es común a las tres.
 # $TO es el pedido de la sección 12: 1 × 150000, pagado entero con $PID.
 section "12c · Reembolsos"
-st=$(req GET "/orders/$TO/payments")
+st=$(req GET "/admin/orders/$TO/payments")
 assert_status 12c.1a "listar cargos del pedido" 200 "$st"
 assert_eq 12c.1b "un cargo" "1" "$(jqr '. | length')"
 assert_eq 12c.1c "cargo Succeeded" "Succeeded" "$(jqr '.[0].state')"
@@ -386,38 +463,40 @@ assert_eq 12c.1e "es el pago de la sección 12" "$PID" "$(jqr '.[0].id')"
 
 # Los rechazos van ANTES del primer reembolso: con la pasarela real, cada uno de
 # estos que se colara sería plata saliendo de la cuenta de la tienda.
-st=$(req POST "/payments/$PID/refund" '{"amount":999999999}')
+st=$(req POST "/admin/payments/$PID/refund" '{"amount":999999999}')
 assert_title 12c.2a "monto mayor al cargo" 409 "refund.exceeds_payment" "$st"
-st=$(req POST "/payments/$PID/refund" '{"amount":0}')
+st=$(req POST "/admin/payments/$PID/refund" '{"amount":0}')
 assert_status 12c.2b "monto 0" 400 "$st"
-st=$(req POST "/payments/$PID/refund" '{"amount":-5000}')
+st=$(req POST "/admin/payments/$PID/refund" '{"amount":-5000}')
 assert_status 12c.2c "monto negativo" 400 "$st"
-st=$(req POST "/payments/00000000-0000-0000-0000-000000000001/refund" '{}')
+st=$(req POST "/admin/payments/00000000-0000-0000-0000-000000000001/refund" '{}')
 assert_title 12c.2d "payment inexistente" 404 "payment.not_found" "$st"
-# Aislamiento: el cargo es de $TA; desde $TB no existe, ni siquiera para negarlo.
-st=$(req POST "/payments/$PID/refund" '{}' "$TB")
-assert_title 12c.2e "cargo de otro tenant" 404 "payment.not_found" "$st"
-st=$(req GET "/orders/$TO/payments" "" "$TB")
-assert_eq 12c.2f "cargos no se filtran a otro tenant" "0" "$(jqr '. | length')"
+# Aislamiento: el cargo es de $TA. Desde 4.3 ni siquiera se llega al handler —
+# la política corta antes por tenant mismatch, así que es 403 y no el 404 que
+# devolvía el filtro de consultas. Mejor: la sesión es buena, la tienda no.
+st=$(req POST "/admin/payments/$PID/refund" '{}' "$TB")
+assert_status 12c.2e "cargo de otro tenant" 403 "$st"
+st=$(req GET "/admin/orders/$TO/payments" "" "$TB")
+assert_status 12c.2f "cargos de otro tenant" 403 "$st"
 # Un cargo sin confirmar no tiene plata que devolver.
-st=$(checkout "refund-pending-$RUN@test.cl" "$VAR_SIMPLE" 1); RPO="$(jqr '.')"
-req POST "/orders/$RPO/payments/initiate" '{"gateway":"Transfer","type":"Full"}' >/dev/null
+st=$(checkout "refund-pending-$RUN@test.cl" "$VAR_SIMPLE" 1); RPO="$(jqr '.orderId')"
+pub POST "/orders/$RPO/payments/initiate" '{"gateway":"Transfer","type":"Full"}' >/dev/null
 RPP="$(jqr '.paymentId')"
-st=$(req POST "/payments/$RPP/refund" '{}')
+st=$(req POST "/admin/payments/$RPP/refund" '{}')
 assert_title 12c.2g "cargo Pending no es reembolsable" 409 "refund.payment_not_refundable" "$st"
 
 # reason en ASCII a propósito, igual que en la sección 2: Git Bash pasa los
 # argumentos a curl.exe por el codepage ANSI y rompe el UTF-8 del `-d`. La API
 # recibe acentos sin problema (se comprueba mandando el mismo cuerpo con
 # --data-binary @archivo); el que no los sabe pasar es el harness.
-st=$(req POST "/payments/$PID/refund" '{"amount":50000,"reason":"Falto una unidad"}')
+st=$(req POST "/admin/payments/$PID/refund" '{"amount":50000,"reason":"Falto una unidad"}')
 assert_status 12c.3a "reembolso parcial" 200 "$st"
 assert_eq 12c.3b "refund Succeeded" "Succeeded" "$(jqr '.state')"
 assert_eq 12c.3c "monto reembolsado" "50000" "$(jqnum '.amount')"
 assert_eq 12c.3d "orderRefunded acumulado" "50000" "$(jqnum '.orderRefunded')"
 assert_eq 12c.3e "orderPaid intacto" "150000" "$(jqnum '.orderPaid')"
 
-req GET "/orders/$TO" >/dev/null
+req GET "/admin/orders/$TO" >/dev/null
 assert_eq 12c.4a "paid sigue siendo el bruto" "150000" "$(jqnum '.paid')"
 assert_eq 12c.4b "refunded" "50000" "$(jqnum '.refunded')"
 assert_eq 12c.4c "netPaid = paid - refunded" "100000" "$(jqnum '.netPaid')"
@@ -425,39 +504,39 @@ assert_eq 12c.4c "netPaid = paid - refunded" "100000" "$(jqnum '.netPaid')"
 # registrando lo que se cobró, que es históricamente cierto.
 assert_eq 12c.4d "paymentStatus sigue Paid" "Paid" "$(jqr '.paymentStatus')"
 assert_eq 12c.4e "balance sin cambios" "0" "$(jqnum '.balance')"
-req GET "/orders/$TO/payments" >/dev/null
+req GET "/admin/orders/$TO/payments" >/dev/null
 assert_eq 12c.4f "el cargo muestra lo reembolsado" "50000" "$(jqnum '.[0].refundedAmount')"
 
 # Sin amount = el resto de lo que quede reembolsable en ese cargo.
-st=$(req POST "/payments/$PID/refund" '{}')
+st=$(req POST "/admin/payments/$PID/refund" '{}')
 assert_status 12c.5a "reembolso del resto" 200 "$st"
 assert_eq 12c.5b "toma el saldo restante" "100000" "$(jqnum '.amount')"
 assert_eq 12c.5c "orderRefunded completo" "150000" "$(jqnum '.orderRefunded')"
 
-st=$(req POST "/payments/$PID/refund" '{"amount":1}')
+st=$(req POST "/admin/payments/$PID/refund" '{"amount":1}')
 assert_title 12c.6 "nada más que devolver" 409 "refund.exceeds_payment" "$st"
 
-req GET "/orders/$TO" >/dev/null
+req GET "/admin/orders/$TO" >/dev/null
 assert_eq 12c.7a "paid intacto tras devolver todo" "150000" "$(jqnum '.paid')"
 assert_eq 12c.7b "refunded == paid" "150000" "$(jqnum '.refunded')"
 assert_eq 12c.7c "netPaid 0" "0" "$(jqnum '.netPaid')"
 assert_eq 12c.7d "paymentStatus NO retrocede" "Paid" "$(jqr '.paymentStatus')"
 # Si PaymentStatus retrocediera, un pedido ya reembolsado quedaría cobrable otra vez.
-st=$(req POST "/orders/$TO/payments/initiate" '{"gateway":"Transfer","type":"Full"}')
+st=$(pub POST "/orders/$TO/payments/initiate" '{"gateway":"Transfer","type":"Full"}')
 assert_title 12c.7e "pedido reembolsado no se recobra" 409 "order.already_paid" "$st"
 
 # Cancelar y reembolsar son dos decisiones distintas: cancelar libera el stock,
 # reembolsar devuelve la plata. Un pedido cancelado sigue siendo reembolsable.
-st=$(checkout "refund-cancel-$RUN@test.cl" "$VAR_SIMPLE" 1); RCO="$(jqr '.')"
-req POST "/orders/$RCO/payments/initiate" '{"gateway":"Transfer","type":"Full"}' >/dev/null
+st=$(checkout "refund-cancel-$RUN@test.cl" "$VAR_SIMPLE" 1); RCO="$(jqr '.orderId')"
+pub POST "/orders/$RCO/payments/initiate" '{"gateway":"Transfer","type":"Full"}' >/dev/null
 RCP="$(jqr '.paymentId')"
-req POST "/payments/$RCP/confirm" '{"externalReference":"TRF-CANCEL"}' >/dev/null
-st=$(req POST "/orders/$RCO/cancel")
+req POST "/admin/payments/$RCP/confirm" '{"externalReference":"TRF-CANCEL"}' >/dev/null
+st=$(req POST "/admin/orders/$RCO/cancel")
 assert_status 12c.8a "cancelar pedido pagado" 200 "$st"
-st=$(req POST "/payments/$RCP/refund" '{"reason":"Pedido cancelado"}')
+st=$(req POST "/admin/payments/$RCP/refund" '{"reason":"Pedido cancelado"}')
 assert_status 12c.8b "reembolsar un pedido cancelado" 200 "$st"
 assert_eq 12c.8c "devuelve todo lo cobrado" "150000" "$(jqnum '.amount')"
-req GET "/orders/$RCO" >/dev/null
+req GET "/admin/orders/$RCO" >/dev/null
 assert_eq 12c.8d "queda cancelado y con netPaid 0" "0" "$(jqnum '.netPaid')"
 assert_eq 12c.8e "fulfillment Cancelled" "Cancelled" "$(jqr '.fulfillmentStatus')"
 
@@ -471,13 +550,13 @@ assert_eq 12c.8e "fulfillment Cancelled" "Cancelled" "$(jqr '.fulfillmentStatus'
 # mismo estado (Deposited + saldo pendiente) sin acoplar la sección al cupo del
 # drop, y lo que se prueba es el link, no la mecánica de preventa (sección 10).
 section "12d · Link de pago para invitados"
-st=$(checkout "link-$RUN@test.cl" "$VAR_SIMPLE" 1); LO="$(jqr '.')"
-req POST "/orders/$LO/payments" '{"amount":50000}' >/dev/null
+st=$(checkout "link-$RUN@test.cl" "$VAR_SIMPLE" 1); LO="$(jqr '.orderId')"
+req POST "/admin/orders/$LO/payments" '{"amount":50000}' >/dev/null
 assert_eq 12d.0a "abono parcial -> Deposited" "Deposited" "$(jqr '.paymentStatus')"
-req GET "/orders/$LO" >/dev/null
+req GET "/admin/orders/$LO" >/dev/null
 assert_eq 12d.0b "queda saldo" "100000" "$(jqnum '.balance')"
 
-st=$(req POST "/orders/$LO/payment-link" '{"validForDays":15}')
+st=$(req POST "/admin/orders/$LO/payment-link" '{"validForDays":15}')
 assert_status 12d.1a "la tienda genera el link" 200 "$st"
 LINK_URL="$(jqr '.url')"; LTOKEN="${LINK_URL##*/}"
 assert_eq 12d.1b "balance en la respuesta" "100000" "$(jqnum '.balance')"
@@ -488,7 +567,7 @@ case "$LINK_URL" in http://localhost:4200/pagar/*) ok 12d.1d "url sobre la base 
   || ko 12d.1e "largo de token inesperado: ${#LTOKEN}"
 
 # El invitado abre el link: sin X-Tenant-Id y sin auth. El tenant sale del token.
-st=$(req GET "/pay/$LTOKEN" "" "")
+st=$(pub GET "/pay/$LTOKEN" "" "")
 assert_status 12d.2a "abrir el link SIN header de tenant" 200 "$st"
 assert_eq 12d.2b "ve su saldo" "100000" "$(jqnum '.balance')"
 assert_eq 12d.2c "ve el total" "150000" "$(jqnum '.total')"
@@ -498,57 +577,68 @@ assert_eq 12d.2e "ve sus líneas" "1" "$(jqr '.lines | length')"
 assert_eq 12d.2f "no expone el customerId" "null" "$(jqr '.customerId')"
 assert_eq 12d.2g "no expone fulfillmentStatus" "null" "$(jqr '.fulfillmentStatus')"
 # El token manda sobre el header: aunque llegue el tenant equivocado, resuelve el suyo.
-st=$(req GET "/pay/$LTOKEN" "" "$TB")
+st=$(pub GET "/pay/$LTOKEN" "" "$TB")
 assert_eq 12d.2h "el token gana sobre un header ajeno" "100000" "$(jqnum '.balance')"
 
-st=$(req GET "/pay/token-inventado" "" "")
+st=$(pub GET "/pay/token-inventado" "" "")
 assert_title 12d.3a "token inexistente" 404 "order.payment_link_invalid" "$st"
-st=$(req POST "/pay/token-inventado/initiate" '{"gateway":"Transfer"}' "")
+st=$(pub POST "/pay/token-inventado/initiate" '{"gateway":"Transfer"}' "")
 assert_title 12d.3b "initiate con token inexistente" 404 "order.payment_link_invalid" "$st"
 
 # Paga el saldo por transferencia, siempre sin identificarse.
-st=$(req POST "/pay/$LTOKEN/initiate" '{"gateway":"Transfer"}' "")
+st=$(pub POST "/pay/$LTOKEN/initiate" '{"gateway":"Transfer"}' "")
 assert_status 12d.4a "initiate por el link" 200 "$st"
 LPID="$(jqr '.paymentId')"
 assert_eq 12d.4b "cobra el saldo exacto" "100000" "$(jqnum '.amount')"
 [ "$(jqr '.bankDetails')" != "null" ] && ok 12d.4c "bankDetails para el invitado" || ko 12d.4c "sin bankDetails"
 
-st=$(req POST "/payments/$LPID/confirm" '{"externalReference":"TRF-LINK"}')
+st=$(req POST "/admin/payments/$LPID/confirm" '{"externalReference":"TRF-LINK"}')
 assert_eq 12d.5a "la tienda confirma -> Paid" "Paid" "$(jqr '.orderPaymentStatus')"
 assert_eq 12d.5b "saldo 0" "0" "$(jqnum '.orderBalance')"
 
-# Y acá se prueba que los domain events se despachan de verdad: nadie llamó a
-# revocar, lo hizo el handler de OrderPaid. Si el link siguiera vivo, el dispatch
-# no está funcionando.
-st=$(req GET "/pay/$LTOKEN" "" "")
-assert_title 12d.6 "link revocado al quedar pagado (OrderPaid despachado)" 404 "order.payment_link_invalid" "$st"
-st=$(req POST "/orders/$LO/payment-link" '{}')
+# El token dejó de revocarse al pagar: desde 4.3 es el ACCESO del invitado a su
+# pedido, no solo permiso para pagarlo, y matarlo acá lo dejaría sin poder ver el
+# pedido que acaba de pagar (no tiene cuenta con la cual entrar).
+st=$(pub GET "/pay/$LTOKEN" "" "")
+assert_status 12d.6a "el invitado sigue viendo su pedido pagado" 200 "$st"
+assert_eq 12d.6b "y lo ve como pagado" "Paid" "$(jqr '.paymentStatus')"
+
+# Se revoca al ENTREGAR: ahí sí se acabó lo que tenía que seguir. Y como nadie
+# llama a revocar —lo hace el handler de OrderDelivered— esto sigue siendo la
+# prueba de que los domain events se despachan.
+req POST "/admin/orders/$LO/prepare" >/dev/null
+LLINE="$(jqr '.lines[0].id')"
+req GET "/admin/orders/$LO" >/dev/null; LLINE="$(jqr '.lines[0].id')"
+req POST "/admin/orders/$LO/lines/$LLINE/fulfill" '{"quantity":1}' >/dev/null
+st=$(pub GET "/pay/$LTOKEN" "" "")
+assert_title 12d.6c "link revocado al entregar (OrderDelivered despachado)" 404 "order.payment_link_invalid" "$st"
+st=$(req POST "/admin/orders/$LO/payment-link" '{}')
 assert_title 12d.7 "no se genera link sin saldo" 409 "order.nothing_to_pay" "$st"
 
 # Regenerar invalida el anterior: es la revocación, y sale gratis por guardar el hash.
-st=$(checkout "link2-$RUN@test.cl" "$VAR_SIMPLE" 1); LO2="$(jqr '.')"
-req POST "/orders/$LO2/payments" '{"amount":50000}' >/dev/null
-req POST "/orders/$LO2/payment-link" '{}' >/dev/null; T_OLD="$(jqr '.url')"; T_OLD="${T_OLD##*/}"
-req POST "/orders/$LO2/payment-link" '{}' >/dev/null; T_NEW="$(jqr '.url')"; T_NEW="${T_NEW##*/}"
+st=$(checkout "link2-$RUN@test.cl" "$VAR_SIMPLE" 1); LO2="$(jqr '.orderId')"
+req POST "/admin/orders/$LO2/payments" '{"amount":50000}' >/dev/null
+req POST "/admin/orders/$LO2/payment-link" '{}' >/dev/null; T_OLD="$(jqr '.url')"; T_OLD="${T_OLD##*/}"
+req POST "/admin/orders/$LO2/payment-link" '{}' >/dev/null; T_NEW="$(jqr '.url')"; T_NEW="${T_NEW##*/}"
 [ "$T_OLD" != "$T_NEW" ] && ok 12d.8a "el token nuevo es distinto" || ko 12d.8a "mismo token dos veces"
-st=$(req GET "/pay/$T_OLD" "" ""); assert_title 12d.8b "el token viejo deja de servir" 404 "order.payment_link_invalid" "$st"
-st=$(req GET "/pay/$T_NEW" "" ""); assert_status 12d.8c "el token nuevo sirve" 200 "$st"
+st=$(pub GET "/pay/$T_OLD" "" ""); assert_title 12d.8b "el token viejo deja de servir" 404 "order.payment_link_invalid" "$st"
+st=$(pub GET "/pay/$T_NEW" "" ""); assert_status 12d.8c "el token nuevo sirve" 200 "$st"
 
 # Un pedido puede cancelarse DESPUÉS de mandar el link, y el link ya está en el
 # chat del comprador. Sin esto se le podría cobrar un pedido muerto.
-st=$(req POST "/orders/$LO2/cancel"); assert_status 12d.9a "cancelar el pedido" 200 "$st"
-st=$(req GET "/pay/$T_NEW" "" "")
+st=$(req POST "/admin/orders/$LO2/cancel"); assert_status 12d.9a "cancelar el pedido" 200 "$st"
+st=$(pub GET "/pay/$T_NEW" "" "")
 assert_title 12d.9b "el link deja de servir al cancelar" 404 "order.payment_link_invalid" "$st"
-st=$(req POST "/pay/$T_NEW/initiate" '{"gateway":"Transfer"}' "")
+st=$(pub POST "/pay/$T_NEW/initiate" '{"gateway":"Transfer"}' "")
 assert_title 12d.9c "tampoco se puede pagar" 404 "order.payment_link_invalid" "$st"
-st=$(req POST "/orders/$LO2/payment-link" '{}')
+st=$(req POST "/admin/orders/$LO2/payment-link" '{}')
 assert_title 12d.9d "no se genera link para un cancelado" 409 "order.cancelled" "$st"
 
-st=$(req POST "/orders/00000000-0000-0000-0000-000000000001/payment-link" '{}')
+st=$(req POST "/admin/orders/00000000-0000-0000-0000-000000000001/payment-link" '{}')
 assert_title 12d.10a "pedido inexistente" 404 "order.not_found" "$st"
-st=$(req POST "/orders/$LO/payment-link" '{"validForDays":0}')
+st=$(req POST "/admin/orders/$LO/payment-link" '{"validForDays":0}')
 assert_status 12d.10b "validForDays 0" 400 "$st"
-st=$(req POST "/orders/$LO/payment-link" '{"validForDays":9999}')
+st=$(req POST "/admin/orders/$LO/payment-link" '{"validForDays":9999}')
 assert_status 12d.10c "validForDays fuera de rango" 400 "$st"
 
 # =============================================================================
@@ -558,21 +648,22 @@ assert_status 12d.10c "validForDays fuera de rango" 400 "$st"
 # contrato HTTP del webhook, que es donde un bug se paga caro — un no-200 mete a
 # MP en un loop de reintentos.
 section "12b · Mercado Pago (sin credenciales reales)"
-MPO="$(guid)"   # tenant efímero propio: configurar MP acá no ensucia $TA
-req POST /products "{\"sku\":\"MP-$RUN\",\"name\":\"MP Test\",\"price\":25000,\"currency\":\"CLP\"}" "$MPO" >/dev/null
+# Tienda efímera propia: configurar MP acá no ensucia $TA.
+read -r MPO JAR_MP <<< "$(mkstore_session mp)"
+creq POST /admin/products "{\"sku\":\"MP-$RUN\",\"name\":\"MP Test\",\"price\":25000,\"currency\":\"CLP\"}" "$MPO" "$JAR_MP" >/dev/null
 PROD_MP="$(jqr '.')"
-req GET "/products/$PROD_MP" "" "$MPO" >/dev/null; VAR_MP="$(jqr '.variants[0].id')"
-req POST "/variants/$VAR_MP/stock" '{"quantity":5}' "$MPO" >/dev/null
-req POST /orders "{\"customer\":{\"email\":\"mp-$RUN@test.cl\",\"phone\":\"+56911111111\"},\"items\":[{\"productVariantId\":\"$VAR_MP\",\"quantity\":1}]}" "$MPO" >/dev/null
-MPORDER="$(jqr '.')"
+pub GET "/products/$PROD_MP" "" "$MPO" >/dev/null; VAR_MP="$(jqr '.variants[0].id')"
+creq POST "/admin/variants/$VAR_MP/stock" '{"quantity":5}' "$MPO" "$JAR_MP" >/dev/null
+pub POST /orders "{\"customer\":{\"email\":\"mp-$RUN@test.cl\",\"phone\":\"+56911111111\"},\"items\":[{\"productVariantId\":\"$VAR_MP\",\"quantity\":1}]}" "$MPO" >/dev/null
+MPORDER="$(jqr '.orderId')"
 
-st=$(req PUT /payment-methods/MercadoPago '{"credentialsJson":"{\"webhookSecret\":\"x\"}"}' "$MPO")
+st=$(creq PUT /admin/payment-methods/MercadoPago '{"credentialsJson":"{\"webhookSecret\":\"x\"}"}' "$MPO" "$JAR_MP")
 assert_status 12b.1 "configurar MP sin accessToken" 200 "$st"
-st=$(req POST "/orders/$MPORDER/payments/initiate" '{"gateway":"MercadoPago","type":"Full"}' "$MPO")
+st=$(pub POST "/orders/$MPORDER/payments/initiate" '{"gateway":"MercadoPago","type":"Full"}' "$MPO")
 assert_title 12b.2 "credenciales incompletas" 409 "payment.invalid_credentials" "$st"
 
-st=$(req PUT /payment-methods/MercadoPago '{"credentialsJson":"{\"accessToken\":\"TEST-no-sirve\",\"webhookSecret\":\"\"}"}' "$MPO")
-st=$(req POST "/orders/$MPORDER/payments/initiate" '{"gateway":"MercadoPago","type":"Full"}' "$MPO")
+st=$(creq PUT /admin/payment-methods/MercadoPago '{"credentialsJson":"{\"accessToken\":\"TEST-no-sirve\",\"webhookSecret\":\"\"}"}' "$MPO" "$JAR_MP")
+st=$(pub POST "/orders/$MPORDER/payments/initiate" '{"gateway":"MercadoPago","type":"Full"}' "$MPO")
 # Lo que importa: MP rechaza y devolvemos un error de dominio, no un 500.
 assert_title 12b.3 "token inválido -> gateway_failure (no 500)" 409 "payment.gateway_failure" "$st"
 
@@ -593,9 +684,9 @@ assert_eq 12b.10 "tenant inválido en el path -> 404" "404" \
   "$(hook "$API/payments/mercadopago/webhook/no-es-guid?type=payment&data.id=1")"
 
 section "13 · Concurrencia (anti-sobreventa)"
-st=$(req POST /products "{\"sku\":\"RACE-$RUN\",\"name\":\"Race\",\"price\":5000,\"currency\":\"CLP\"}"); RP="$(jqr '.')"
+st=$(req POST /admin/products "{\"sku\":\"RACE-$RUN\",\"name\":\"Race\",\"price\":5000,\"currency\":\"CLP\"}"); RP="$(jqr '.')"
 req GET "/products/$RP" >/dev/null; RV="$(jqr '.variants[0].id')"
-req POST "/variants/$RV/stock" '{"quantity":1}' >/dev/null
+req POST "/admin/variants/$RV/stock" '{"quantity":1}' >/dev/null
 declare -a CODES
 for i in 1 2 3; do
   ( checkout "race$i-$RUN@test.cl" "$RV" 1 > "$BODY.r$i" ) &
@@ -609,9 +700,9 @@ assert_eq 13.2a "available 0 (sin sobreventa)" "0" "$(jqr '.available')"
 assert_eq 13.2b "reserved 1 (nunca > 1)" "1" "$(jqr '.reserved')"
 
 section "14 · Transversales"
-st=$(req POST /orders "{bad json" "$TA")
+st=$(pub POST /orders "{bad json" "$TA")
 assert_title 14.2 "JSON malformado -> 400 (F3)" 400 "request.invalid_body" "$st"
-st=$(req GET "/orders/no-es-guid"); assert_status 14.4 "guid inválido en ruta" 404 "$st"
+st=$(req GET "/admin/orders/no-es-guid"); assert_status 14.4 "guid inválido en ruta" 404 "$st"
 AO=$(curl -s -o /dev/null -w '%{http_code}' -X OPTIONS "$API/products" \
   -H "Origin: http://localhost:4200" -H "Access-Control-Request-Method: POST" \
   -H "Access-Control-Request-Headers: x-tenant-id" -D "$BODY.h"; grep -i '^access-control-allow-origin' "$BODY.h" | tr -d '\r')
@@ -622,7 +713,7 @@ grep -iq '^access-control-allow-origin' "$BODY.h2" && ko 14.6 "CORS permitió ev
 rm -f "$BODY.h" "$BODY.h2"
 st=$(req GET "/products/99999999-9999-9999-9999-999999999999")
 [ "$(jqr '.title')" = "catalog.product_not_found" ] && [ "$(jqr '.status')" = "404" ] && ok 14.7 "ProblemDetails de dominio" || ko 14.7 "ProblemDetails de dominio"
-st=$(req POST /products '{"sku":"","name":"","price":-1,"currency":"X"}')
+st=$(req POST /admin/products '{"sku":"","name":"","price":-1,"currency":"X"}')
 [ "$st" = "400" ] && [ "$(jqr '.errors | type')" = "object" ] && ok 14.8 "errores de validación agrupados" || ko 14.8 "errores de validación agrupados"
 
 # =============================================================================
@@ -630,12 +721,12 @@ st=$(req POST /products '{"sku":"","name":"","price":-1,"currency":"X"}')
 # tiendas existen de verdad, y el id que devuelve POST /platform/stores ES el
 # tenant id de todo el resto del sistema.
 #
-# ⚠️ Estos endpoints están SIN AUTENTICAR hasta 4.3. Que el smoke test pueda
-# crear tiendas sin credenciales no es un descuido del test: es el estado real
-# del backend, y es exactamente lo que 4.3 tiene que cerrar.
+# Desde 4.3 exigen sesión: /platform la del operador, /admin/staff la de un Owner
+# o Admin de esa misma tienda. Cada llamada lleva el tarro que le corresponde, y
+# cuál corresponde es parte de lo que se prueba.
 section "15 · Platform (tiendas y usuarios)"
 SLUG="cardshop-$RUN"
-st=$(req POST /platform/stores \
+st=$(plat POST /platform/stores \
   "{\"name\":\"Card Shop\",\"slug\":\"$SLUG\",\"ownerEmail\":\"dueno-$RUN@cardshop.cl\",\"ownerName\":\"Dueno\",\"ownerPassword\":\"password-larga-123\"}" "")
 assert_status 15.1a "crear tienda SIN header de tenant" 200 "$st"
 S1="$(jqr '.id')"
@@ -644,21 +735,23 @@ assert_eq 15.1c "nace activa" "Active" "$(jqr '.status')"
 assert_eq 15.1d "sin dominio propio" "null" "$(jqr '.customDomain')"
 
 # El slug es un label DNS: va a ser un subdominio, así que se valida como tal.
-st=$(req POST /platform/stores \
+st=$(plat POST /platform/stores \
   "{\"name\":\"x\",\"slug\":\"Con Mayusculas Y Espacios\",\"ownerEmail\":\"a-$RUN@x.cl\",\"ownerName\":\"A\",\"ownerPassword\":\"password-larga-123\"}" "")
 assert_status 15.2a "slug inválido" 400 "$st"
-st=$(req POST /platform/stores \
+st=$(plat POST /platform/stores \
   "{\"name\":\"x\",\"slug\":\"otro-$RUN\",\"ownerEmail\":\"no-es-email\",\"ownerName\":\"A\",\"ownerPassword\":\"password-larga-123\"}" "")
 assert_status 15.2b "email de owner inválido" 400 "$st"
-st=$(req POST /platform/stores \
+st=$(plat POST /platform/stores \
   "{\"name\":\"x\",\"slug\":\"otro2-$RUN\",\"ownerEmail\":\"b-$RUN@x.cl\",\"ownerName\":\"A\",\"ownerPassword\":\"corta\"}" "")
 assert_status 15.2c "password de owner muy corta" 400 "$st"
-st=$(req POST /platform/stores \
+st=$(plat POST /platform/stores \
   "{\"name\":\"Otra\",\"slug\":\"$SLUG\",\"ownerEmail\":\"c-$RUN@x.cl\",\"ownerName\":\"A\",\"ownerPassword\":\"password-larga-123\"}" "")
 assert_title 15.2d "slug repetido" 409 "platform.slug_taken" "$st"
 
 # La tienda nace con su dueño: una tienda que nadie puede administrar no sirve.
-st=$(req GET /admin/staff "" "$S1")
+JAR_S1="$BODY.jar.s1"; JAR_S2="$BODY.jar.s2"; touch "$JAR_S1" "$JAR_S2"
+creq POST /auth/staff/login "{\"email\":\"dueno-$RUN@cardshop.cl\",\"password\":\"password-larga-123\"}" "$S1" "$JAR_S1" >/dev/null
+st=$(creq GET /admin/staff "" "$S1" "$JAR_S1")
 assert_status 15.3a "listar staff de la tienda nueva" 200 "$st"
 assert_eq 15.3b "nace con exactamente un usuario" "1" "$(jqr '. | length')"
 assert_eq 15.3c "y es el Owner" "Owner" "$(jqr '.[0].role')"
@@ -666,44 +759,46 @@ assert_eq 15.3d "email del owner normalizado" "dueno-$RUN@cardshop.cl" "$(jqr '.
 # El hash no sale nunca, ni para el admin que lo acaba de fijar.
 assert_eq 15.3e "no expone el passwordHash" "null" "$(jqr '.[0].passwordHash')"
 
-st=$(req POST /admin/staff \
-  "{\"email\":\"caja-$RUN@cardshop.cl\",\"name\":\"Cajera\",\"password\":\"password-larga-456\",\"role\":\"Cashier\"}" "$S1")
+st=$(creq POST /admin/staff \
+  "{\"email\":\"caja-$RUN@cardshop.cl\",\"name\":\"Cajera\",\"password\":\"password-larga-456\",\"role\":\"Cashier\"}" "$S1" "$JAR_S1")
 assert_status 15.4a "sumar una cajera" 200 "$st"
 assert_eq 15.4b "rol Cashier (listo para el POS de fase 5)" "Cashier" "$(jqr '.role')"
-st=$(req POST /admin/staff \
-  "{\"email\":\"CAJA-$RUN@cardshop.cl\",\"name\":\"Otra\",\"password\":\"password-larga-789\",\"role\":\"Staff\"}" "$S1")
+CASHIER_ID="$(jqr '.id')"
+st=$(creq POST /admin/staff \
+  "{\"email\":\"CAJA-$RUN@cardshop.cl\",\"name\":\"Otra\",\"password\":\"password-larga-789\",\"role\":\"Staff\"}" "$S1" "$JAR_S1")
 assert_title 15.4c "email repetido en la misma tienda" 409 "platform.staff_email_taken" "$st"
 
 # Aislamiento: el staff SÍ es tenant-scoped, así que otra tienda no lo ve.
-st=$(req POST /platform/stores \
+st=$(plat POST /platform/stores \
   "{\"name\":\"Otra Tienda\",\"slug\":\"otra-$RUN\",\"ownerEmail\":\"dueno2-$RUN@otra.cl\",\"ownerName\":\"Dueno2\",\"ownerPassword\":\"password-larga-123\"}" "")
 S2="$(jqr '.id')"
-req GET /admin/staff "" "$S2" >/dev/null
+creq POST /auth/staff/login "{\"email\":\"dueno2-$RUN@otra.cl\",\"password\":\"password-larga-123\"}" "$S2" "$JAR_S2" >/dev/null
+creq GET /admin/staff "" "$S2" "$JAR_S2" >/dev/null
 assert_eq 15.5a "la otra tienda solo ve su owner" "1" "$(jqr '. | length')"
 assert_eq 15.5b "y es el suyo" "dueno2-$RUN@otra.cl" "$(jqr '.[0].email')"
 # El mismo email puede trabajar en dos tiendas: la unicidad es por tienda.
-st=$(req POST /admin/staff \
-  "{\"email\":\"caja-$RUN@cardshop.cl\",\"name\":\"Cajera\",\"password\":\"password-larga-456\",\"role\":\"Cashier\"}" "$S2")
+st=$(creq POST /admin/staff \
+  "{\"email\":\"caja-$RUN@cardshop.cl\",\"name\":\"Cajera\",\"password\":\"password-larga-456\",\"role\":\"Cashier\"}" "$S2" "$JAR_S2")
 assert_status 15.5c "el mismo email en otra tienda sí se puede" 200 "$st"
 
 # Store NO es tenant-scoped: listar tiendas las trae todas, sin filtro.
-st=$(req GET /platform/stores "" "")
+st=$(plat GET /platform/stores "" "")
 assert_status 15.6a "listar tiendas sin tenant" 200 "$st"
 [ "$(jqr "[.[] | select(.id==\"$S1\")] | length")" = "1" ] && ok 15.6b "la tienda 1 aparece" || ko 15.6b "falta la tienda 1"
 [ "$(jqr "[.[] | select(.id==\"$S2\")] | length")" = "1" ] && ok 15.6c "la tienda 2 aparece (sin filtro de tenant)" || ko 15.6c "falta la tienda 2"
 
 # Suspender/activar: el único enforcement de suscripción que existe.
-st=$(req POST "/platform/stores/$S2/suspend" "" "")
+st=$(plat POST "/platform/stores/$S2/suspend" "" "")
 assert_eq 15.7a "suspender" "Suspended" "$(jqr '.status')"
-st=$(req POST "/platform/stores/$S2/activate" "" "")
+st=$(plat POST "/platform/stores/$S2/activate" "" "")
 assert_eq 15.7b "reactivar" "Active" "$(jqr '.status')"
-st=$(req POST "/platform/stores/00000000-0000-0000-0000-000000000001/suspend" "" "")
+st=$(plat POST "/platform/stores/00000000-0000-0000-0000-000000000001/suspend" "" "")
 assert_title 15.7c "tienda inexistente" 404 "platform.store_not_found" "$st"
 
 # El staff sí exige tenant; el guard sigue puesto para todo lo que no sea platform.
-st=$(req POST /admin/staff \
-  "{\"email\":\"x-$RUN@x.cl\",\"name\":\"X\",\"password\":\"password-larga-123\",\"role\":\"Staff\"}" "")
-assert_status 15.8 "crear staff sin tenant sigue siendo 400" 400 "$st"
+st=$(pub POST /admin/staff \
+  "{\"email\":\"x-$RUN@x.cl\",\"name\":\"X\",\"password\":\"password-larga-123\",\"role\":\"Staff\"}" "$S1")
+assert_status 15.8 "crear staff sin sesión" 401 "$st"
 
 # =============================================================================
 # El mecanismo de sesiones. Todavía NO está aplicado a los endpoints existentes
@@ -712,19 +807,19 @@ assert_status 15.8 "crear staff sin tenant sigue siendo 400" 400 "$st"
 #
 # $S1 y $S2 vienen de la sección 15, con sus owners y sus contraseñas conocidas.
 section "16 · Autenticación por sesión"
-JARP="$BODY.jar.platform"; JARS="$BODY.jar.staff"; JARX="$BODY.jar.other"
-rm -f "$JARP" "$JARS" "$JARX"
+JARP2="$BODY.jar.platform2"; JARS="$BODY.jar.staff"; JARX="$BODY.jar.other"
+rm -f "$JARP2" "$JARS" "$JARX"; touch "$JARP2" "$JARS" "$JARX"
 
 # --- operador de plataforma (el sembrado en 4.1) ---
-st=$(creq POST /auth/platform/login '{"email":"admin@lewik.cl","password":"cambiar-esto-ya-1234"}' "" "$JARP")
+st=$(creq POST /auth/platform/login "{\"email\":\"$OPERATOR_EMAIL\",\"password\":\"$OPERATOR_PASSWORD\"}" "" "$JARP2")
 assert_status 16.1a "login de operador" 200 "$st"
 assert_eq 16.1b "devuelve el nombre" "Platform Admin" "$(jqr '.displayName')"
 # El token va SOLO en la cookie: nunca en el cuerpo, donde un proxy lo loguearía.
 assert_eq 16.1c "el token no viaja en el body" "null" "$(jqr '.token')"
-grep -q "lewik_platform_session" "$JARP" && ok 16.1d "dejó la cookie de plataforma" || ko 16.1d "sin cookie"
-grep -q "^#HttpOnly_" "$JARP" && ok 16.1e "cookie HttpOnly (fuera del alcance de JS)" || ko 16.1e "cookie no es HttpOnly"
+grep -q "lewik_platform_session" "$JARP2" && ok 16.1d "dejó la cookie de plataforma" || ko 16.1d "sin cookie"
+grep -q "^#HttpOnly_" "$JARP2" && ok 16.1e "cookie HttpOnly (fuera del alcance de JS)" || ko 16.1e "cookie no es HttpOnly"
 
-st=$(creq GET /auth/platform/me "" "" "$JARP")
+st=$(creq GET /auth/platform/me "" "" "$JARP2")
 assert_status 16.2a "usar la sesión de plataforma" 200 "$st"
 assert_eq 16.2b "es quien dice ser" "Platform Admin" "$(jqr '.name')"
 
@@ -752,11 +847,11 @@ assert_status 16.5b "sesión sin tenant resuelto -> 403" 403 "$st"
 # Cruzar poblaciones: son schemes distintos, con cookies y tablas distintas.
 st=$(creq GET /auth/platform/me "" "" "$JARS")
 assert_status 16.6a "cookie de staff en endpoint de plataforma -> 401" 401 "$st"
-st=$(creq GET /auth/staff/me "" "$S1" "$JARP")
+st=$(creq GET /auth/staff/me "" "$S1" "$JARP2")
 assert_status 16.6b "cookie de plataforma en endpoint de staff -> 401" 401 "$st"
 
 # Sin cookie y con cookie inventada.
-st=$(req GET /auth/staff/me "" "$S1")
+st=$(pub GET /auth/staff/me "" "$S1")
 assert_status 16.7a "sin sesión -> 401" 401 "$st"
 st=$(curl -s -o "$BODY" -w '%{http_code}' "$API/auth/staff/me" \
   -H "X-Tenant-Id: $S1" -H "Cookie: lewik_panel_session=token-inventado")
@@ -786,21 +881,21 @@ st=$(creq POST /auth/staff/logout "" "$S1" "$JARS")
 assert_status 16.8f "logout de nuevo es inofensivo" 204 "$st"
 
 # --- credenciales malas: siempre el mismo error ---
-st=$(req POST /auth/staff/login "{\"email\":\"dueno-$RUN@cardshop.cl\",\"password\":\"incorrecta\"}" "$S1")
+st=$(pub POST /auth/staff/login "{\"email\":\"dueno-$RUN@cardshop.cl\",\"password\":\"incorrecta\"}" "$S1")
 assert_title 16.9a "password incorrecta" 400 "auth.invalid_credentials" "$st"
-st=$(req POST /auth/staff/login "{\"email\":\"no-existe-$RUN@cardshop.cl\",\"password\":\"password-larga-123\"}" "$S1")
+st=$(pub POST /auth/staff/login "{\"email\":\"no-existe-$RUN@cardshop.cl\",\"password\":\"password-larga-123\"}" "$S1")
 assert_title 16.9b "email inexistente: MISMO error (no enumera cuentas)" 400 "auth.invalid_credentials" "$st"
 # El owner de $S1 no existe en $S2, aunque la contraseña sea válida en su tienda.
-st=$(req POST /auth/staff/login "{\"email\":\"dueno-$RUN@cardshop.cl\",\"password\":\"password-larga-123\"}" "$S2")
+st=$(pub POST /auth/staff/login "{\"email\":\"dueno-$RUN@cardshop.cl\",\"password\":\"password-larga-123\"}" "$S2")
 assert_title 16.9c "credenciales de otra tienda" 400 "auth.invalid_credentials" "$st"
-st=$(req POST /auth/platform/login '{"email":"admin@lewik.cl","password":"incorrecta"}' "")
+st=$(pub POST /auth/platform/login "{\"email\":\"$OPERATOR_EMAIL\",\"password\":\"incorrecta\"}" "")
 assert_title 16.9d "operador con password mala" 400 "auth.invalid_credentials" "$st"
 
 # --- una tienda suspendida no deja entrar ---
-req POST "/platform/stores/$S2/suspend" "" "" >/dev/null
-st=$(req POST /auth/staff/login "{\"email\":\"dueno2-$RUN@otra.cl\",\"password\":\"password-larga-123\"}" "$S2")
+plat POST "/platform/stores/$S2/suspend" "" "" >/dev/null
+st=$(pub POST /auth/staff/login "{\"email\":\"dueno2-$RUN@otra.cl\",\"password\":\"password-larga-123\"}" "$S2")
 assert_title 16.10a "login en tienda suspendida" 409 "platform.store_suspended" "$st"
-req POST "/platform/stores/$S2/activate" "" "" >/dev/null
+plat POST "/platform/stores/$S2/activate" "" "" >/dev/null
 st=$(creq POST /auth/staff/login "{\"email\":\"dueno2-$RUN@otra.cl\",\"password\":\"password-larga-123\"}" "$S2" "$JARX")
 assert_status 16.10b "y sí deja al reactivarla" 200 "$st"
 
@@ -810,12 +905,105 @@ st=$(creq GET /auth/staff/me "" "$S2" "$JARX")
 assert_status 16.11a "la sesión de la otra tienda funciona" 200 "$st"
 assert_eq 16.11b "y es de SU tienda" "$S2" "$(jqr '.tenantId')"
 
-# --- el mecanismo existe pero todavía NO protege nada (eso es 4.3) ---
-st=$(req GET /platform/stores "" "")
-assert_status 16.12a "⚠️ /platform/stores sigue abierto (pendiente 4.3)" 200 "$st"
-st=$(req GET /products "" "$TA")
-assert_status 16.12b "el catálogo sigue anónimo (no rompimos nada)" 200 "$st"
-rm -f "$JARP" "$JARS" "$JARX"
+# --- desde 4.3 el mecanismo ya protege de verdad ---
+st=$(pub GET /platform/stores "" "")
+assert_status 16.12a "/platform/stores ya NO está abierto" 401 "$st"
+st=$(plat GET /platform/stores "" "")
+assert_status 16.12b "y sí responde al operador" 200 "$st"
+st=$(pub GET /products "" "$TA")
+assert_status 16.12c "el catálogo sigue anónimo (no rompimos la vidriera)" 200 "$st"
+rm -f "$JARP2" "$JARS" "$JARX"; touch "$JARP2" "$JARS" "$JARX"
+
+# =============================================================================
+# El límite de seguridad ahora está en la URL: lo público es público, lo de
+# gestión vive bajo /admin, y adentro de /admin hay tres alturas (staff, admin,
+# owner). Esta sección prueba las alturas, no las rutas una por una — eso ya lo
+# cubren las secciones 1 a 14, que corren enteras con sesión.
+section "17 · Partición y privilegios"
+JAR_CAJA="$BODY.jar.caja"; touch "$JAR_CAJA"
+
+# Una cajera de la tienda $S1 (creada en la sección 15).
+st=$(creq POST /auth/staff/login \
+  "{\"email\":\"caja-$RUN@cardshop.cl\",\"password\":\"password-larga-456\"}" "$S1" "$JAR_CAJA")
+assert_status 17.1a "login de la cajera" 200 "$st"
+assert_eq 17.1b "rol Cashier" "Cashier" "$(jqr '.role')"
+
+# ⭐ ESCALADA DE PRIVILEGIO: la cajera tiene sesión válida de ESTA tienda, pero
+# cambiar las credenciales de pasarela redirige la plata de la tienda a otra
+# cuenta. Es el privilegio más peligroso del sistema y es solo del dueño.
+st=$(creq PUT /admin/payment-methods/Transfer '{"credentialsJson":"{}"}' "$S1" "$JAR_CAJA")
+assert_status 17.2a "cajera NO toca las pasarelas (owner-only)" 403 "$st"
+# Y tampoco crea usuarios: eso es de admin para arriba.
+st=$(creq POST /admin/staff \
+  "{\"email\":\"colada-$RUN@x.cl\",\"name\":\"C\",\"password\":\"password-larga-123\",\"role\":\"Owner\"}" "$S1" "$JAR_CAJA")
+assert_status 17.2b "cajera NO crea usuarios (admin-only)" 403 "$st"
+# Pero sí opera: para eso entró. Lo que se afirma es que NO la corta la política
+# (403); que el recurso no exista en su tienda (404) significa que pasó el control
+# y llegó al handler, que es justo lo que se quiere ver.
+st=$(creq GET "/admin/products/$PROD_SIMPLE/purchase-limit" "" "$S1" "$JAR_CAJA")
+if [ "$st" != "403" ] && [ "$st" != "401" ]; then
+  ok 17.2c "cajera SÍ entra a la operación (HTTP $st)"
+else
+  ko 17.2c "cajera bloqueada de más (HTTP $st)"
+fi
+# El dueño de la misma tienda sí puede.
+st=$(creq PUT /admin/payment-methods/Transfer \
+  '{"credentialsJson":"{\"banco\":\"Estado\",\"numero\":\"1\",\"titular\":\"T\"}"}' "$S1" "$JAR_S1")
+assert_status 17.2d "el dueño SÍ toca las pasarelas" 200 "$st"
+
+# --- sin sesión no se entra a nada de gestión ---
+st=$(pub POST /admin/products "{\"sku\":\"NOAUTH-$RUN\",\"name\":\"x\",\"price\":1,\"currency\":\"CLP\"}")
+assert_status 17.3a "crear producto sin sesión" 401 "$st"
+st=$(pub GET "/admin/orders/$TO")
+assert_status 17.3b "leer un pedido sin sesión" 401 "$st"
+st=$(pub POST "/admin/variants/$VAR_SIMPLE/stock" '{"quantity":1}')
+assert_status 17.3c "reponer stock sin sesión" 401 "$st"
+st=$(pub GET /admin/staff "" "$S1")
+assert_status 17.3d "listar staff sin sesión" 401 "$st"
+
+# --- la vidriera sigue abierta: el storefront no tiene cuenta ---
+st=$(pub GET /products); assert_status 17.4a "catálogo público" 200 "$st"
+st=$(pub GET "/products/$PROD_SIMPLE"); assert_status 17.4b "ficha de producto pública" 200 "$st"
+st=$(pub GET "/variants/$VAR_SIMPLE/stock"); assert_status 17.4c "disponibilidad pública" 200 "$st"
+st=$(pub GET "/variants/$VAR_DROP/preorder"); assert_status 17.4d "cupo del drop público" 200 "$st"
+
+# --- el header CSRF: capa extra sobre SameSite y CORS estricto ---
+# GET no lo exige (rompería navegar), los que cambian estado sí.
+st=$(curl -s -o "$BODY" -w '%{http_code}' -X POST "$API/admin/products" -b "$JAR_A" \
+  -H "X-Tenant-Id: $TA" -H "Content-Type: application/json" \
+  -d "{\"sku\":\"NOCSRF-$RUN\",\"name\":\"x\",\"price\":1,\"currency\":\"CLP\"}")
+assert_title 17.5a "POST sin header CSRF" 403 "request.csrf_header_missing" "$st"
+st=$(curl -s -o "$BODY" -w '%{http_code}' "$API/admin/orders/$TO" -b "$JAR_A" -H "X-Tenant-Id: $TA")
+assert_status 17.5b "GET no exige CSRF" 200 "$st"
+
+# --- el invitado hace todo su recorrido sin sesión ---
+st=$(pub POST /orders "{\"customer\":{\"email\":\"guest-$RUN@test.cl\",\"phone\":\"+56911111111\"},\"items\":[{\"productVariantId\":\"$VAR_SIMPLE\",\"quantity\":1}]}")
+assert_status 17.6a "checkout anónimo" 200 "$st"
+GO="$(jqr '.orderId')"; GTOK="$(jqr '.accessToken')"
+[ -n "$GTOK" ] && [ "$GTOK" != "null" ] && ok 17.6b "el checkout le da su token de acceso" || ko 17.6b "sin accessToken"
+st=$(pub GET "/pay/$GTOK" "" "")
+assert_status 17.6c "ve su pedido con el token" 200 "$st"
+assert_eq 17.6d "y es el suyo" "$GO" "$(jqr '.orderId')"
+# Sin el token no hay forma: el GUID pelado ya no alcanza.
+st=$(pub GET "/admin/orders/$GO")
+assert_status 17.6e "el GUID pelado ya no abre el pedido" 401 "$st"
+
+# --- desactivar a alguien le corta la sesión en el acto ---
+CTOK="$(awk '/lewik_panel_session/ {print $7}' "$JAR_CAJA")"
+st=$(curl -s -o "$BODY" -w '%{http_code}' "$API/auth/staff/me" -H "X-Tenant-Id: $S1" \
+  -H "Cookie: lewik_panel_session=$CTOK")
+assert_status 17.7a "la cajera está adentro" 200 "$st"
+st=$(creq POST "/admin/staff/$CASHIER_ID/deactivate" "" "$S1" "$JAR_S1")
+assert_status 17.7b "el dueño la desactiva" 200 "$st"
+assert_eq 17.7c "queda inactiva" "false" "$(jqr '.isActive')"
+# Con el token crudo, para no medir el borrado de cookie sino la revocación real.
+st=$(curl -s -o "$BODY" -w '%{http_code}' "$API/auth/staff/me" -H "X-Tenant-Id: $S1" \
+  -H "Cookie: lewik_panel_session=$CTOK")
+assert_status 17.7d "su sesión muere en el acto (no al vencer la caché)" 401 "$st"
+st=$(pub POST /auth/staff/login \
+  "{\"email\":\"caja-$RUN@cardshop.cl\",\"password\":\"password-larga-456\"}" "$S1")
+assert_title 17.7e "y tampoco puede volver a entrar" 409 "auth.account_disabled" "$st"
+rm -f "$JAR_CAJA"
 
 # =============================================================================
 section "RESUMEN"

@@ -1,4 +1,5 @@
 ﻿using System.Text.Json;
+using LeWiK.Store.Api.Auth;
 using LeWiK.Store.Api.Common;
 using LeWiK.Store.App.Common.Persistence;
 using LeWiK.Store.App.Common.Tenancy;
@@ -15,20 +16,34 @@ public static class PaymentEndpoints
 {
     public static IEndpointRouteBuilder MapPaymentEndpoints(this IEndpointRouteBuilder app)
     {
-        // Admin: configure a gateway's credentials (BYOC).
-        app.MapPut("/payment-methods/{gateway}", async (PaymentGateway gateway, ConfigureMethodBody body, ISender sender) =>
-            (await sender.Send(new ConfigurePaymentMethodCommand(gateway, body.CredentialsJson))).ToHttpResult());
+        // OWNER ONLY. Gateway credentials decide which bank account the store's money lands in,
+        // so whoever can change them can redirect every future payment. It is the single most
+        // dangerous privilege in the system and the only thing restricted this tightly.
+        app.MapPut("/admin/payment-methods/{gateway}",
+                async (PaymentGateway gateway, ConfigureMethodBody body, ISender sender) =>
+                    (await sender.Send(new ConfigurePaymentMethodCommand(gateway, body.CredentialsJson))).ToHttpResult())
+            .RequireAuthorization(AuthPolicies.StoreOwner)
+            .RequireCsrfHeader();
 
-        // Buyer: start paying an order with a gateway.
+        // Public: the buyer pays immediately after checkout, before any account exists.
         app.MapPost("/orders/{orderId:guid}/payments/initiate", async (Guid orderId, InitiateBody body, ISender sender) =>
             (await sender.Send(new InitiatePaymentCommand(orderId, body.Gateway, body.Type))).ToHttpResult());
 
-        // Store: confirm a payment (transfer received). Gateways will call the equivalent internally.
-        app.MapPost("/payments/{paymentId:guid}/confirm", async (Guid paymentId, ConfirmBody? body, ISender sender) =>
+        // Admin: confirming money received, refunding, auditing the charges of an order.
+        var admin = app.MapGroup("/admin")
+            .RequireAuthorization(AuthPolicies.StoreStaff)
+            .RequireCsrfHeader();
+
+        // Store: confirm a payment (transfer received). Gateways call the equivalent internally.
+        admin.MapPost("/payments/{paymentId:guid}/confirm", async (Guid paymentId, ConfirmBody? body, ISender sender) =>
             (await sender.Send(new ConfirmPaymentCommand(paymentId, body?.ExternalReference))).ToHttpResult());
 
+        // Store: the charges of an order, with how much of each has been refunded.
+        admin.MapGet("/orders/{orderId:guid}/payments", async (Guid orderId, ISender sender) =>
+            (await sender.Send(new ListOrderPaymentsQuery(orderId))).ToHttpResult());
+
         // Store: refund a specific charge (full when no amount is given, partial otherwise).
-        app.MapPost("/payments/{paymentId:guid}/refund", async (
+        admin.MapPost("/payments/{paymentId:guid}/refund", async (
             Guid paymentId, RefundBody? body, HttpRequest http, ISender sender) =>
         {
             // One key per refund REQUEST, minted here so it survives the pipeline's concurrency
@@ -43,9 +58,9 @@ public static class PaymentEndpoints
                 new RefundPaymentCommand(paymentId, body?.Amount, body?.Reason, key))).ToHttpResult();
         });
 
-        // Store: the charges of an order, with how much of each has been refunded.
-        app.MapGet("/orders/{orderId:guid}/payments", async (Guid orderId, ISender sender) =>
-            (await sender.Send(new ListOrderPaymentsQuery(orderId))).ToHttpResult());
+        // Gateway callbacks stay public below: Transbank and Mercado Pago are the callers, and
+        // neither can present a session. They authenticate by other means — Webpay by the token
+        // it hands back, MP by the x-signature on its notification.
 
         // Transbank redirects the BROWSER here — no tenant header, and depending on the flow it
         // arrives by GET (token in the query string) or POST (form fields), so we accept both and

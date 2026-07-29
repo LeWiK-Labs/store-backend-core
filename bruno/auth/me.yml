@@ -1,0 +1,24 @@
+info:
+  name: Who am I (staff)
+  type: http
+  seq: 3
+http:
+  method: GET
+  url: "{{baseUrl}}/auth/staff/me"
+  auth: inherit
+runtime:
+  scripts:
+    - type: tests
+      code: |-
+        test("returns 200", function() { expect(res.status).to.equal(200); });
+settings:
+  encodeUrl: true
+docs: |-
+  # Who am I
+  Devuelve id, nombre, rol y tenant de la sesión actual. Sirve para ver de un
+  vistazo con qué credenciales estás operando.
+
+  Vale la pena probar el caso torcido: cambiá el environment a la otra tienda sin
+  volver a loguearte y repetí. Da **403**, no 401 — la sesión es válida, la tienda
+  no. Esa es la garantía que impide operar la tienda de otro cambiando el
+  subdominio.

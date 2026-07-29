@@ -1,0 +1,54 @@
+info:
+  name: Create Store
+  type: http
+  seq: 1
+http:
+  method: POST
+  url: "{{baseUrl}}/platform/stores"
+  headers:
+    - name: X-Requested-With
+      value: LeWiKPanel
+    - name: Content-Type
+      value: application/json
+  body:
+    type: json
+    data: |-
+      {
+        "name": "Card Shop",
+        "slug": "cardshop",
+        "ownerEmail": "dueno@cardshop.cl",
+        "ownerName": "Dueno",
+        "ownerPassword": "password-larga-123"
+      }
+  auth: inherit
+runtime:
+  scripts:
+    - type: tests
+      code: |-
+        test("returns 200", function() { expect(res.status).to.equal(200); });
+        if (res.status === 200) { bru.setEnvVar("tenantId", res.body.id); }
+settings:
+  encodeUrl: true
+docs: |-
+  # Create Store
+  Crea una tienda **con su primer dueño** en una sola operación: una tienda que
+  nadie puede administrar no sirve, y crearlos por separado deja una ventana en
+  la que existe una sin el otro.
+
+  El test guarda el id en `tenantId` del environment, que es lo que van a usar
+  todas las demás requests como `X-Tenant-Id`.
+
+  ## Body
+  | campo | tipo | req | nota |
+  |---|---|:--:|---|
+  | name | string | sí | máx 200 |
+  | slug | string | sí | label DNS: `[a-z0-9-]`, máx 63 — va a ser un subdominio |
+  | customDomain | string | no | dominio propio, único |
+  | ownerEmail | string | sí | email válido |
+  | ownerName | string | sí | |
+  | ownerPassword | string | sí | mín 10 chars |
+
+  ## Respuestas
+  - **200** — `{ id, name, slug, customDomain, status }`
+  - **409** `platform.slug_taken` / `platform.domain_taken`
+  - **401** — sin sesión de operador

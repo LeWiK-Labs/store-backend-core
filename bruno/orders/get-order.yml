@@ -4,7 +4,7 @@ info:
   seq: 2
 http:
   method: GET
-  url: "{{baseUrl}}/orders/{{orderId}}"
+  url: "{{baseUrl}}/admin/orders/{{orderId}}"
   auth: inherit
 runtime:
   scripts:

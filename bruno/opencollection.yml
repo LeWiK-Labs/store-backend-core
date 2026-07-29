@@ -12,3 +12,26 @@ docs: |-
   **Multi-tenant:** cada request lleva `X-Tenant-Id`, heredado de esta
   colección y poblado por el environment activo. Cambiá entre
   "Local · Tenant A/B" para operar como tiendas distintas.
+
+  ## Por dónde empezar (cambió en 4.3)
+  1. **Auth > Platform Login** — sesión de operador de LeWiK.
+  2. **Platform > Create Store** — crea la tienda; su test deja el id en `tenantId`.
+  3. **Auth > Staff Login** — entra al panel de esa tienda.
+  4. Recién ahí responde todo lo demás.
+
+  El tenant ya no puede ser un GUID inventado: tiene que ser una tienda que exista
+  (`staff_users` tiene FK a `stores`).
+
+  ## La partición
+  | Prefijo | Quién entra |
+  |---|---|
+  | `/platform/*` | PlatformOperator |
+  | `/admin/*` | staff de ESA tienda (sesión + tenant match) |
+  | `/admin/staff/*` | owner o admin |
+  | `/admin/payment-methods/*` | solo owner — decide a qué cuenta llega la plata |
+  | público | catálogo de lectura, stock/drop, checkout, iniciar pago |
+  | `/pay/{token}/*` | el invitado, con el token que le dio el checkout |
+
+  Todo lo que cambia estado bajo `/admin` o `/platform` necesita además el header
+  `X-Requested-With: LeWiKPanel` (capa extra sobre SameSite=Lax y CORS estricto).
+  Las requests de esta colección ya lo llevan.

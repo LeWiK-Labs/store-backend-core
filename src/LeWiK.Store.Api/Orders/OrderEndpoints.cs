@@ -1,3 +1,4 @@
+using LeWiK.Store.Api.Auth;
 using LeWiK.Store.Api.Common;
 using LeWiK.Store.App.Orders;
 using MediatR;
@@ -8,38 +9,38 @@ public static class OrderEndpoints
 {
     public static IEndpointRouteBuilder MapOrderEndpoints(this IEndpointRouteBuilder app)
     {
-        var group = app.MapGroup("/orders");
-
-        // Place an order (checkout).
-        group.MapPost("/", async (CheckoutCommand command, ISender sender) =>
+        // Public: checkout. The buyer has no account and never will — the response carries an
+        // access token so they can track and pay their order afterwards.
+        app.MapPost("/orders", async (CheckoutCommand command, ISender sender) =>
             (await sender.Send(command)).ToHttpResult());
 
-        group.MapGet("/{orderId:guid}", async (Guid orderId, ISender sender) =>
+        // Admin: everything about an order that already exists. Reading one by bare id used to
+        // be public, which meant a guessed or leaked GUID handed over a stranger's name, email
+        // and phone. Guests now go through /pay/{token} instead.
+        var admin = app.MapGroup("/admin/orders")
+            .RequireAuthorization(AuthPolicies.StoreStaff)
+            .RequireCsrfHeader();
+
+        admin.MapGet("/{orderId:guid}", async (Guid orderId, ISender sender) =>
             (await sender.Send(new GetOrderQuery(orderId))).ToHttpResult());
-        
-        // Register a payment (confirm transfer / collect balance).
-        group.MapPost("/{orderId:guid}/payments", async (Guid orderId, RegisterPaymentBody body, ISender sender) =>
+
+        admin.MapPost("/{orderId:guid}/payments", async (Guid orderId, RegisterPaymentBody body, ISender sender) =>
             (await sender.Send(new RegisterPaymentCommand(orderId, body.Amount))).ToHttpResult());
 
-// Release a preorder (stock arrived).
-        group.MapPost("/{orderId:guid}/release", async (Guid orderId, ISender sender) =>
+        admin.MapPost("/{orderId:guid}/release", async (Guid orderId, ISender sender) =>
             (await sender.Send(new ReleaseOrderCommand(orderId))).ToHttpResult());
 
-// Start preparing.
-        group.MapPost("/{orderId:guid}/prepare", async (Guid orderId, ISender sender) =>
+        admin.MapPost("/{orderId:guid}/prepare", async (Guid orderId, ISender sender) =>
             (await sender.Send(new StartPreparingCommand(orderId))).ToHttpResult());
 
-// Fulfill a line (full or partial pickup/shipment).
-        group.MapPost("/{orderId:guid}/lines/{lineId:guid}/fulfill", async (Guid orderId, Guid lineId, FulfillLineBody body, ISender sender) =>
-            (await sender.Send(new FulfillLineCommand(orderId, lineId, body.Quantity))).ToHttpResult());
+        admin.MapPost("/{orderId:guid}/lines/{lineId:guid}/fulfill",
+            async (Guid orderId, Guid lineId, FulfillLineBody body, ISender sender) =>
+                (await sender.Send(new FulfillLineCommand(orderId, lineId, body.Quantity))).ToHttpResult());
 
-// Cancel (releases reservations).
-        group.MapPost("/{orderId:guid}/cancel", async (Guid orderId, ISender sender) =>
+        admin.MapPost("/{orderId:guid}/cancel", async (Guid orderId, ISender sender) =>
             (await sender.Send(new CancelOrderCommand(orderId))).ToHttpResult());
 
-// Store: issue a guest payment link for the balance. The URL comes back ONCE — it is
-// stored hashed, so it can never be read again, only reissued.
-        group.MapPost("/{orderId:guid}/payment-link", async (Guid orderId, PaymentLinkBody? body, ISender sender) =>
+        admin.MapPost("/{orderId:guid}/payment-link", async (Guid orderId, PaymentLinkBody? body, ISender sender) =>
             (await sender.Send(new CreatePaymentLinkCommand(orderId, body?.ValidForDays))).ToHttpResult());
 
         return app;
@@ -47,5 +48,5 @@ public static class OrderEndpoints
 }
 
 public sealed record RegisterPaymentBody(decimal Amount);
-public sealed record PaymentLinkBody(int? ValidForDays);
 public sealed record FulfillLineBody(int Quantity);
+public sealed record PaymentLinkBody(int? ValidForDays);
