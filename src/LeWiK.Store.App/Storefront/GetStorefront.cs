@@ -41,7 +41,11 @@ public sealed record StorefrontAvailability(
     string Kind, int Available, bool IsSellable,
     DateTime? ReleaseDate, string? DepositType, decimal? DepositValue);
 
-public sealed record StorefrontLimit(int? MaxPerOrder, int? MaxPerCustomer, int? WindowDays);
+// Only the per-order cap is public: the storefront needs it to cap the quantity
+// selector, and a buyer discovers it anyway by asking for too many. MaxPerCustomer
+// and WindowDays stay admin-only — publishing them hands a scalper the exact
+// recipe (how many accounts to make, how often to rotate them).
+public sealed record StorefrontLimit(int? MaxPerOrder);
 
 // Composes catalog + availability + limits in one read: the storefront can't afford
 // N+1 calls. Modules stay separate for writes; this is a presentation-layer read.
@@ -90,12 +94,9 @@ public sealed class GetStorefrontHandler(StoreDbContext db, ITenantContext tenan
             .Where(p => variantIds.Contains(p.ProductVariantId) && p.Status == PreorderStatus.Active)
             .ToDictionaryAsync(p => p.ProductVariantId, p => p, ct);
 
-        // NOTE: this publishes the anti-scalping limits, which /admin/products/{id}/purchase-limit
-        // deliberately keeps behind the panel — reading them tells a scalper exactly what to stay
-        // under. It is here because the storefront has to cap its quantity selector, and 4.7 asks
-        // for it. MaxPerOrder is discoverable anyway (order more, get a 409); MaxPerCustomer and
-        // WindowDays are the ones that give away the policy, and dropping them from this shape is
-        // a one-line change if that trade stops being worth it.
+        // Read whole and published narrow: only MaxPerOrder survives Map. A policy that is only
+        // per-customer therefore leaves maxPerOrder null, so the front caps nothing and the limit
+        // still applies at checkout — the cap exists, it just is not announced.
         var limits = await db.Set<PurchaseLimit>().AsNoTracking().ToListAsync(ct);
         var productLimits = limits.Where(l => l.Scope == PurchaseLimitScope.Product)
             .ToDictionary(l => l.TargetId, Map);
@@ -117,17 +118,10 @@ public sealed class GetStorefrontHandler(StoreDbContext db, ITenantContext tenan
     // of precedence as Checkout, which is the point — the page must not offer what the checkout
     // would refuse. A variant with neither reads as stock 0, which is what order.no_stock means.
     private static StorefrontAvailability Availability(
-        Guid variantId, Dictionary<Guid, int> stock, Dictionary<Guid, Preorder> preorders)
-    {
-        if (preorders.TryGetValue(variantId, out var drop))
-            return new StorefrontAvailability(
-                "Preorder", drop.AvailableCapacity, drop.AvailableCapacity > 0,
-                drop.ReleaseDate, drop.DepositType.ToString(), drop.DepositValue);
+        Guid variantId, Dictionary<Guid, int> stock, Dictionary<Guid, Preorder> preorders) =>
+        preorders.TryGetValue(variantId, out var drop)
+            ? AvailabilityFactory.FromPreorder(drop)
+            : AvailabilityFactory.FromStock(stock.GetValueOrDefault(variantId));
 
-        var available = stock.GetValueOrDefault(variantId);
-        return new StorefrontAvailability("Stock", available, available > 0, null, null, null);
-    }
-
-    private static StorefrontLimit Map(PurchaseLimit l) =>
-        new(l.MaxPerOrder, l.MaxPerCustomer, l.WindowDays);
+    private static StorefrontLimit Map(PurchaseLimit l) => new(l.MaxPerOrder);
 }

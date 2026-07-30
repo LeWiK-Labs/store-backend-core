@@ -19,7 +19,6 @@
     aislamiento: el grupo lleva el tenant, así que a la otra tienda no le llega nada.
   -->
 
-  <p>Tienda: <b id="store">—</b></p>
   <label>variantId <input id="variantId" placeholder="GUID de la variante" size="40"></label>
   <button id="watch">Mirar</button>
   <p>Estado: <b id="status">desconectado</b></p>
@@ -52,19 +51,13 @@ conn.start()
 
 $("watch").onclick = async () => {
   const id = $("variantId").value.trim();
-  await conn.invoke("WatchVariant", id);
-  log("suscrito a " + id);
 
-  // Primero suscribir, DESPUÉS leer: al revés, un checkout que entre entre la lectura y la
-  // suscripción se pierde y el número queda viejo para siempre. En este orden, lo peor que
-  // pasa es pintar dos veces el mismo valor.
-  const r = await fetch("/storefront");
-  if (!r.ok) return log("no se pudo leer /storefront: " + r.status);
-  const sf = await r.json();
-  $("store").textContent = sf.store.name;
-  for (const p of sf.products)
-    for (const v of p.variants)
-      if (v.id === id) render(v.availability);
+  // Suscribirse devuelve el valor actual en la misma llamada. No hace falta leer /storefront
+  // después ni acordarse de hacerlo en el orden correcto: la carrera no existe porque el hub
+  // se une al grupo antes de consultar.
+  const actual = await conn.invoke("WatchVariant", id);
+  log("suscrito a " + id);
+  if (actual) render(actual); else log("el hub no devolvió estado (¿tienda sin resolver?)");
 };
 </script>
 </body>

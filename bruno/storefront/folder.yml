@@ -18,5 +18,12 @@ docs: |-
   tienda mirando el MISMO `variantId` y no llega nada — el grupo de SignalR lleva
   el tenant, que se resuelve del host al conectar y nunca lo manda el cliente.
 
+  `WatchVariant(variantId)` **devuelve la disponibilidad actual** además de suscribir,
+  así que el front no necesita leer `/storefront` después ni acordarse de hacerlo en
+  el orden correcto. Esa era una carrera real: leer primero y suscribirse después
+  pierde cualquier cambio que entre en el medio, y el contador queda viejo para
+  siempre sin que nadie se entere. El hub se une al grupo antes de consultar, así que
+  lo peor que puede pasar es ver el mismo número dos veces.
+
   Con la tienda suspendida el hub tampoco atiende: rechaza la conexión con
   `platform.store_suspended`, igual que el resto de la superficie.

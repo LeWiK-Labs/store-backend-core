@@ -45,13 +45,18 @@ docs: |-
   los dos se lee como `Stock 0`, que es lo que significa `order.no_stock`.
 
   ## `limit`
-  Viene a nivel de producto y de variante, para que el front pueda capar el
-  selector de cantidad en vez de dejar que el comprador descubra el tope con un
-  409. **Ojo:** esto publica la política anti-scalping, que
-  `/admin/products/{id}/purchase-limit` mantiene a propósito detrás del panel —
-  leerla le dice a un revendedor exactamente bajo qué quedarse. `maxPerOrder` se
-  descubre igual pidiendo de más; `maxPerCustomer` y `windowDays` son los que
-  regalan la política.
+  Trae **solo `maxPerOrder`**, a nivel de producto y de variante, para que el front
+  cape el selector de cantidad en vez de dejar que el comprador descubra el tope con
+  un 409. Ese número se descubre igual pidiendo de más, así que publicarlo no regala
+  nada. `maxPerCustomer` y `windowDays` **no salen**: son la receta completa para un
+  revendedor (cuántas cuentas hacer, cada cuánto rotarlas) y siguen viviendo en
+  `/admin/products/{id}/purchase-limit`, con el resto de la configuración.
+
+  El tope por cliente sigue aplicándose en el checkout aunque no se anuncie, así que
+  **el front tiene que manejar el 409 `order.limit_per_customer` igual**, incluso
+  cuando su propio selector permitió esa cantidad. Y una política que solo tenga tope
+  por cliente sale con `maxPerOrder: null`: el front no capa nada y el límite se
+  aplica lo mismo. El tope existe, no se anuncia.
 
   ## Respuestas
   - **200** — `{ store: { name, slug }, products: [...] }`

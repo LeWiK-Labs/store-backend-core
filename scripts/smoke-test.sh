@@ -177,7 +177,8 @@ hub_open() { # HOST
   printf '%s' "$id"
 }
 
-# hub_invoke ID HOST MÉTODO ARG -> vuelve recién cuando el hub confirmó la invocación.
+# hub_invoke ID HOST MÉTODO ARG -> imprime el frame de completion (type 3), con su .result.
+# Vuelve recién cuando el hub confirmó la invocación.
 # El invocationId no es decorativo: el POST de un frame devuelve 200 apenas el mensaje entra en
 # la conexión, y el método del hub corre después, en el bucle de la conexión. Sin esperar el
 # completion (type 3), un checkout puede ganarle a la suscripción y la prueba mediría una
@@ -185,7 +186,7 @@ hub_open() { # HOST
 hub_invoke() { # ID HOST TARGET ARG
   printf '{"type":1,"invocationId":"1","target":"%s","arguments":["%s"]}\x1e' "$3" "$4" \
     | curl -s -m 5 -o /dev/null -X POST "$API/hubs/store?id=$1" -H "Host: $2" --data-binary @-
-  hub_poll "$1" "$2" 5 | grep -q '"type":3'
+  hub_poll "$1" "$2" 5 | grep '"type":3' | head -1
 }
 
 # hub_poll ID HOST SEGUNDOS -> los frames recibidos, uno por línea.
@@ -1183,6 +1184,12 @@ assert_title 18.6e "por su dominio propio también" 403 "platform.store_suspende
 st=$(dom POST /auth/staff/login "panel.smoke-d-$RUN.localhost" \
   "{\"email\":\"owner-d-$RUN@smoke.cl\",\"password\":\"$OWNER_PASSWORD\"}")
 assert_title 18.6f "el dueño llega al login y le explican" 409 "platform.store_suspended" "$st"
+# ⭐ El comprador NO. Hasta 4.7 la allowlist era el prefijo "/auth" pelado, así que el login de
+# clientes seguía abierto en una tienda que contesta 403 a todo lo demás. Con credenciales
+# inventadas: antes llegaba al handler y devolvía 400 auth.invalid_credentials — o sea, atendía.
+st=$(dom POST /auth/customer/login "smoke-d-$RUN.localhost" \
+  '{"email":"comprador@test.cl","password":"lo-que-sea"}')
+assert_title 18.6f2 "la tienda suspendida está cerrada al comprador" 403 "platform.store_suspended" "$st"
 st=$(dom GET /health/db "smoke-d-$RUN.localhost")
 assert_status 18.6g "health sigue arriba (suspendida no es rota)" 200 "$st"
 st=$(dom GET /health/entitlement "smoke-d-$RUN.localhost")
@@ -1511,7 +1518,8 @@ PROD_LIVED="$(jqr '.')"
 st=$(req GET "/products/$PROD_LIVED"); VLIVED="$(jqr '.variants[0].id')"
 req PUT "/admin/variants/$VLIVED/preorder" \
   '{"capacity":60,"releaseDate":"2026-12-01T00:00:00Z","depositType":"Percentage","depositValue":30}' >/dev/null
-req PUT "/admin/variants/$VLIVE/purchase-limit" '{"maxPerOrder":6}' >/dev/null
+# Con las tres partes puestas, para que 21.1f2 mida un filtrado y no un campo que estaba vacío.
+req PUT "/admin/variants/$VLIVE/purchase-limit" '{"maxPerOrder":6,"maxPerCustomer":9,"windowDays":30}' >/dev/null
 
 # --- 21.1 el read compuesto: catálogo + disponibilidad + topes en UNA llamada ---
 st=$(dom GET /storefront "$HOST_A")
@@ -1526,8 +1534,18 @@ assert_eq 21.1d "el stock se ve como Stock, con su número" "Stock 40" \
 # El drop trae además lo que la página de un drop necesita para existir: fecha y abono.
 assert_eq 21.1e "el drop se ve como Preorder con cupo, fecha y abono" "Preorder 60 Percentage 30" \
   "$(jqr "[.products[].variants[] | select(.id==\"$VLIVED\")][0] | \"\(.availability.kind) \(.availability.available) \(.availability.depositType) \(.availability.depositValue)\"")"
-assert_eq 21.1f "los topes anti-scalping viajan (el front capa el selector)" "6" \
+assert_eq 21.1f "el tope por pedido viaja (el front capa el selector)" "6" \
   "$(jqr "[.products[].variants[] | select(.id==\"$VLIVE\")][0].limit.maxPerOrder")"
+# ⭐ Y la política NO viaja entera. maxPerOrder se descubre igual pidiendo de más; maxPerCustomer
+# y windowDays son la receta completa para un revendedor: cuántas cuentas hacer y cada cuánto
+# rotarlas. El tope por cliente sigue existiendo y sigue aplicándose en el checkout (19.10c), solo
+# que no se anuncia.
+assert_eq 21.1f2 "⭐ el tope por cliente NO se publica" "null null" \
+  "$(jqr "[.products[].variants[] | select(.id==\"$VLIVE\")][0].limit | \"\(.maxPerCustomer) \(.windowDays)\"")"
+# Y el panel lo sigue viendo entero: la política no se perdió, cambió de audiencia.
+req GET "/admin/variants/$VLIVE/purchase-limit" >/dev/null
+assert_eq 21.1f3 "el panel sí ve la política completa" "6 9 30" \
+  "$(jqr '"\(.maxPerOrder) \(.maxPerCustomer) \(.windowDays)"')"
 # El aislamiento del read, dicho como una ausencia: mismo backend, otro dominio, no está.
 st=$(dom GET /storefront "$HOST_B")
 assert_eq 21.1g "la variante de A no aparece en la vidriera de B" "0" \
@@ -1547,35 +1565,53 @@ neg=$(curl -s -o "$BODY" -w '%{http_code}' -X POST "$API/hubs/store/negotiate?ne
 assert_title 21.2b "tienda suspendida: el hub la rechaza" 403 "platform.store_suspended" "$neg"
 plat POST "/platform/stores/$TD/activate" "" "" >/dev/null
 
-# --- 21.3 ⭐ el número baja solo, y no cruza de tienda ---
+# --- 21.3 suscribirse ya trae el número, y el número baja solo ---
 IDB="$(hub_open "$HOST_B")" || IDB=""
 # Las dos conexiones miran EL MISMO variantId. La de B no debería recibir nada, y no porque el
 # id no exista de su lado: el grupo lleva el tenant, así que su suscripción apunta a un grupo
 # al que nadie emite jamás.
-hub_invoke "$IDA" "$HOST_A" WatchVariant "$VLIVE"
-hub_invoke "$IDB" "$HOST_B" WatchVariant "$VLIVE"
+SNAP="$(hub_invoke "$IDA" "$HOST_A" WatchVariant "$VLIVE")"
+hub_av() { printf '%s' "$1" | jq -r '.result | "\(.kind) \(.available) \(.isSellable)"' 2>/dev/null; }
+# ⭐ Suscribirse devuelve el estado actual en la misma llamada. Es lo que borra la carrera: leer
+# por un lado y suscribirse por otro pierde cualquier cambio que entre en el medio, y el contador
+# queda viejo para siempre sin que nadie se entere.
+assert_eq 21.3a "⭐ suscribirse ya devuelve el estado actual" "Stock 40 true" "$(hub_av "$SNAP")"
+# Y dice exactamente lo mismo que la vidriera, porque las dos derivan del mismo factory: dos
+# definiciones de "disponible" es lo que hace que una página muestre un número y el checkout otro.
+st=$(dom GET /storefront "$HOST_A")
+assert_eq 21.3b "el hub y la vidriera coinciden al carácter" \
+  "$(jqr "[.products[].variants[] | select(.id==\"$VLIVE\")][0].availability | \"\(.kind) \(.available) \(.isSellable)\"")" \
+  "$(hub_av "$SNAP")"
+# ⭐ El mismo id desde la otra tienda: ahora que el hub CONSULTA, el filtro de tenant también
+# tiene que sostenerse acá, no solo el nombre del grupo. Lee 0, no los 40 de A.
+SNAPB="$(hub_invoke "$IDB" "$HOST_B" WatchVariant "$VLIVE")"
+assert_eq 21.3c "⭐ la otra tienda no lee el stock ajeno al suscribirse" "Stock 0 false" "$(hub_av "$SNAPB")"
+
 st=$(dom POST /orders "$HOST_A" \
   "{\"customer\":{\"email\":\"live-$RUN@test.cl\",\"phone\":\"+56911111111\"},\"items\":[{\"productVariantId\":\"$VLIVE\",\"quantity\":3}]}")
-assert_status 21.3a "checkout sobre la variante mirada" 200 "$st"
+assert_status 21.3d "checkout sobre la variante mirada" 200 "$st"
 FRAME="$(hub_poll "$IDA" "$HOST_A" 10 | grep availabilityChanged | head -1)"
-assert_eq 21.3b "⭐ el frame llega solo, sin que nadie pregunte" "Stock 37 true" \
+assert_eq 21.3e "⭐ el frame llega solo, sin que nadie pregunte" "Stock 37 true" \
   "$(printf '%s' "$FRAME" | jq -r '.arguments[0] | "\(.kind) \(.available) \(.isSellable)"' 2>/dev/null)"
 # La ausencia se mide con el mismo evento ya entregado del otro lado: si acá llega algo, el
 # aislamiento por grupo no existe.
 OTHER="$(hub_poll "$IDB" "$HOST_B" 5)"
-[ -z "$OTHER" ] && ok 21.3c "⭐ a la otra tienda no le llega nada" \
-  || ko 21.3c "fuga entre tiendas: $(printf '%s' "$OTHER" | head -c 120)"
+[ -z "$OTHER" ] && ok 21.3f "⭐ a la otra tienda no le llega nada" \
+  || ko 21.3f "fuga entre tiendas: $(printf '%s' "$OTHER" | head -c 120)"
 
 # --- 21.4 ⭐ el caso estrella: el cupo de un drop en vivo ---
 # Es lo que 4.7 vino a arreglar. Preorder era una Entity y no levantaba eventos, así que durante
 # un drop —el único momento donde un contador en vivo importa— no se movía nada.
-hub_invoke "$IDA" "$HOST_A" WatchVariant "$VLIVED"
+SNAP="$(hub_invoke "$IDA" "$HOST_A" WatchVariant "$VLIVED")"
+# La misma llamada resuelve la otra forma de vender: preventa activa gana sobre stock, igual que
+# en la vidriera y que en el checkout.
+assert_eq 21.4a "suscribirse a un drop devuelve su cupo" "Preorder 60 true" "$(hub_av "$SNAP")"
 st=$(dom POST /orders "$HOST_A" \
   "{\"customer\":{\"email\":\"live-drop-$RUN@test.cl\",\"phone\":\"+56922222222\"},\"items\":[{\"productVariantId\":\"$VLIVED\",\"quantity\":4}]}")
 ODROP="$(jqr '.orderId')"
-assert_status 21.4a "checkout del drop" 200 "$st"
+assert_status 21.4b "checkout del drop" 200 "$st"
 FRAME="$(hub_poll "$IDA" "$HOST_A" 10 | grep availabilityChanged | head -1)"
-assert_eq 21.4b "⭐ el cupo baja en vivo" "Preorder 56 true" \
+assert_eq 21.4c "⭐ el cupo baja en vivo" "Preorder 56 true" \
   "$(printf '%s' "$FRAME" | jq -r '.arguments[0] | "\(.kind) \(.available) \(.isSellable)"' 2>/dev/null)"
 
 # --- 21.5 y sube solo cuando el cupo vuelve ---

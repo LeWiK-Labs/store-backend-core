@@ -34,3 +34,8 @@ docs: |-
     también si ese email compró como invitado y por lo tanto no tiene contraseña.
     Se gasta el mismo tiempo de PBKDF2 en los tres casos, porque si no el reloj
     filtraría lo que el mensaje esconde: la lista de clientes de la tienda.
+  - **403** `platform.store_suspended` — la tienda está suspendida. Desde 4.7 esto
+    llega **antes** que el handler: la tienda está cerrada al comprador. El staff sí
+    puede entrar (`/auth/staff/*`), porque son los que pueden hacer algo al respecto.
+    Hasta 4.7 la excepción era el prefijo `/auth` pelado y el login de clientes
+    seguía abierto en una tienda que contestaba 403 a todo lo demás.

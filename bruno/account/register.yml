@@ -48,6 +48,10 @@ docs: |-
   - **409** `customer.already_registered` — ese email ya tiene cuenta (entrá por Login)
   - **400** — validación
 
-  ⚠️ Nada acá prueba que quien se registra sea el dueño del email. Mientras no haya
-  envío de correo (y por lo tanto verificación), conocer un email que compró de
-  invitado alcanza para reclamar ese historial.
+  ⚠️ **Bloqueante para producción.** Nada acá prueba que quien se registra sea el
+  dueño del email: conocer uno que compró de invitado alcanza para reclamar ese
+  historial. Con verificación de correo obligatoria el agujero se cierra solo —
+  solo quien controla la casilla termina el registro, y es la misma persona que
+  compró. Pero hoy el endpoint funciona sin ella, así que **el registro de clientes
+  no puede salir a producción hasta que exista la verificación**. No es deuda
+  difusa: es una condición de habilitación del storefront.

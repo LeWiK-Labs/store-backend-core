@@ -24,10 +24,15 @@ public sealed class TenantResolutionMiddleware(
         "/payments/webpay/return", "/payments/mercadopago/webhook"
     ];
 
-    // Reachable even when the store is suspended, so staff get an explanation instead of a
+    // Reachable even when the store is suspended, so STAFF get an explanation instead of a
     // silent wall: login answers platform.store_suspended, and a live session can still ask
     // /auth/staff/me. /health stays up because a suspended store is not a broken one.
-    private static readonly string[] SuspendedAllowlist = ["/auth", "/health"];
+    //
+    // Customer login is deliberately NOT here. Until 4.7 the allowlist was the bare "/auth"
+    // prefix, which let buyers keep signing in to a store that answers 403 to everything else
+    // — an asymmetry nobody decided. A suspended store is closed to buyers; the people who
+    // need to see why are the ones who can do something about it.
+    private static readonly string[] SuspendedAllowlist = ["/auth/staff", "/auth/platform", "/health"];
 
     public async Task InvokeAsync(HttpContext context, TenantContext tenant, StoreResolver resolver)
     {
