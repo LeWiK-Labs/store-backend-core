@@ -23,7 +23,7 @@ public sealed class GetMyOrderHandler(StoreDbContext db)
             .Where(o => o.Id == request.OrderId && o.CustomerId == request.CustomerId)
             .Select(o => new PaymentLinkOrderResponse(
                 o.Id, o.Currency, o.TotalAmount, o.PaidAmount, o.BalanceAmount,
-                o.PaymentStatus.ToString(),
+                o.PaymentStatus.ToString(), o.ReservationExpiresAt,
                 o.Lines.Select(l => new PaymentLinkLine(l.NameSnapshot, l.QtyOrdered, l.UnitPrice.Amount)).ToList()))
             .FirstOrDefaultAsync(ct);
 

@@ -89,8 +89,38 @@ public sealed class Order : AggregateRoot, ITenantScoped, IAuditable
 
         PaidAmount += amount;
         RecalculatePaymentStatus();
+
+        // Any money received means a human decides from here on: stop the sweeper. Cancelling an
+        // order with a peso on it automatically would create a refund with nobody in the loop.
+        if (PaymentStatus != PaymentStatus.Pending)
+            ClearReservationWindow();
+
         return Result.Success();
     }
+
+    // ---- Soft-lock window ----
+    // While the order is unpaid, its reservation goes back to stock (or to the drop's capacity)
+    // when the window lapses. Reserving at add-to-cart instead would let a scalper hoard a whole
+    // drop for free; this is the same protection applied where a buyer has actually committed.
+    public void SetReservationWindow(DateTime expiresAt) => ReservationExpiresAt = expiresAt;
+
+    // Buyer is mid-payment at a gateway: never shorten, only push the deadline out. A null window
+    // stays null — an order that was never on the clock does not get put on one by paying.
+    public void ExtendReservation(DateTime expiresAt)
+    {
+        if (ReservationExpiresAt is not null && expiresAt > ReservationExpiresAt)
+            ReservationExpiresAt = expiresAt;
+    }
+
+    public void ClearReservationWindow() => ReservationExpiresAt = null;
+
+    // The sweeper's whole precondition, in one place and on the aggregate: it is re-checked inside
+    // the cancelling transaction, not only when the candidate list was built.
+    public bool IsReservationExpired(DateTime now) =>
+        FulfillmentStatus == FulfillmentStatus.PendingPayment
+        && PaymentStatus == PaymentStatus.Pending
+        && ReservationExpiresAt is not null
+        && ReservationExpiresAt < now;
 
     // Refunds are their own axis. PaymentStatus keeps recording what was CHARGED, which stays
     // historically true; walking it backwards would break its monotonic invariant and the
@@ -228,6 +258,9 @@ public sealed class Order : AggregateRoot, ITenantScoped, IAuditable
         if (FulfillmentStatus == FulfillmentStatus.Cancelled)
             return OrderErrors.OrderCancelled();
         FulfillmentStatus = FulfillmentStatus.Cancelled;
+        // The reservation is gone, so the deadline it had is meaningless: leaving it would show a
+        // live countdown on a dead order and let a later payment attempt push it further out.
+        ClearReservationWindow();
         Raise(new OrderCancelled(TenantId, Id, CustomerId));
         return Result.Success();
     }

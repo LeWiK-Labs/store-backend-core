@@ -34,6 +34,7 @@ builder.Services.AddCors(options =>
 builder.Services.AddStoreApp(builder.Configuration.GetConnectionString("Default")!, redisConnection, builder.Configuration);
 builder.Services.AddStoreAuth();
 builder.Services.AddExceptionHandler<LeWiK.Store.Api.Common.GlobalExceptionHandler>();
+builder.Services.AddHostedService<LeWiK.Store.Api.Workers.ReservationExpiryWorker>();
 builder.Services.AddProblemDetails();
 
 var signalR = builder.Services.AddSignalR();

@@ -65,6 +65,12 @@ docs: |-
 
   Guarda el id del pedido en `orderId`.
 
+  Desde 4.6 la respuesta trae `reservationExpiresAt`: el pedido retiene su stock por
+  `Reservations:TtlMinutes` (30 en producción y en Development) y después un job en segundo plano
+  lo cancela y devuelve el stock. El front cuenta hacia ese plazo. **No** hay reserva al agregar
+  al carrito, y es a propósito: reservar ahí dejaría a un revendedor acaparando un drop entero sin
+  pagar ni poner una tarjeta.
+
   Desde 4.5 mira si hay sesión de comprador (`Account (buyer) > Login`). Si la hay, el
   pedido queda asociado a esa cuenta y **`customer` pasa a ser opcional** — el id sale de
   los claims, nunca del body, así que nadie puede comprar a nombre de otro. Sin sesión

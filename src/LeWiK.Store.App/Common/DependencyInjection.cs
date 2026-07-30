@@ -60,6 +60,9 @@ public static class DependencyInjection
         services.Configure<Payments.PaymentSettings>(o =>
             configuration?.GetSection("Payments").Bind(o));
 
+        services.Configure<Orders.ReservationSettings>(o =>
+            configuration?.GetSection("Reservations").Bind(o));
+
         services.Configure<Platform.TenancySettings>(o =>
             configuration?.GetSection("Tenancy").Bind(o));
         services.AddScoped<Platform.StoreResolver>();

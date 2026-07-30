@@ -17,6 +17,11 @@ docs: |-
   # Get Order
   Devuelve el pedido: estados (fulfillment + pago), total/pagado/saldo/abono, y líneas.
 
+  `reservationExpiresAt` (4.6) es el plazo de la reserva blanda: hasta cuándo este pedido
+  retiene su stock (o su cupo de preventa) sin haber pagado nada. Queda en `null` en cuanto
+  entra plata —cualquier monto apaga el reloj para siempre— y cuando el pedido se cancela.
+  Iniciar un pago lo corre hacia adelante para que la pasarela no quede a medias.
+
   ## Respuestas
   - **200** — el pedido
   - **404** `order.not_found`

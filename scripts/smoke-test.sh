@@ -35,6 +35,12 @@
 #
 # La sección 18 necesita Tenancy:BaseDomain = "localhost" (el default de
 # appsettings.Development.json) y crea una tercera tienda con dominio propio.
+#
+# ---- Desde 4.6: la sección 20 mueve el reloj, no espera ------------------------
+# Las reservas sin pagar vencen a los 30 minutos. Para probarlo sin esperar 30 minutos, la
+# sección 20 corre el vencimiento hacia atrás con `docker exec lewik_store_db psql` y espera un
+# ciclo del barredor (SweepIntervalSeconds, 10s en Development). Si Postgres no se alcanza por
+# ahí, la sección se omite sola. Con EXPIRY_WAIT se ajusta la espera.
 # =============================================================================
 set -u
 
@@ -1314,6 +1320,134 @@ st=$(dom GET /account/orders "$CH" "" "$JAR_LIM")
 assert_eq 19.10f "hereda la compra que hizo de invitado" "1" "$(jqr 'length')"
 st=$(dom POST /orders "$CH" "{\"items\":[{\"productVariantId\":\"$VAR_LIM\",\"quantity\":1}]}" "$JAR_LIM")
 assert_title 19.10g "registrarse no le devuelve el cupo" 409 "order.limit_per_customer" "$st"
+
+# =============================================================================
+# La ventana blanda: un pedido sin pagar no retiene stock para siempre. Lo que se prueba acá es
+# el barredor de verdad (su consulta, el tenant que fija por pedido, y el CancelOrderCommand que
+# reusa), no un reloj de mentira.
+#
+# Cómo, sin esperar los 30 minutos del TTL: se corre el vencimiento hacia atrás en la base con
+# psql y se espera un ciclo de barrido. Bajar el TTL de Development a un minuto sería peor —
+# medio script trabaja sobre un pedido sin pagar a lo largo de varias secciones (el $ORDER de la
+# 7 se paga en la 9, el link de pago de la 12d), así que el barredor los cancelaría por debajo y
+# harían rojo secciones que no tienen nada que ver con reservas.
+section "20 · Expiración de reservas (soft-lock)"
+PSQL="docker exec lewik_store_db psql -U lewik -d lewik_store -t -A -q"
+EXPIRY_WAIT="${EXPIRY_WAIT:-20}"          # SweepIntervalSeconds de Development (10) + margen
+
+# backdate ORDER_ID -> deja el vencimiento 5 minutos en el pasado
+backdate() { $PSQL -c "UPDATE orders SET reservation_expires_at = now() - interval '5 minutes' WHERE id = '$1';" >/dev/null 2>&1; }
+
+if ! $PSQL -c "SELECT 1;" >/dev/null 2>&1; then
+  echo "  (omitida: no se pudo alcanzar Postgres con 'docker exec lewik_store_db psql')"
+else
+  # Producto propio: PROD_SIMPLE arrastra los topes de las secciones 6 y 18.
+  st=$(req POST /admin/products "{\"sku\":\"EXP-$RUN\",\"name\":\"Booster Box\",\"price\":80000,\"currency\":\"CLP\"}")
+  PROD_EXP="$(jqr '.')"
+  st=$(req GET "/products/$PROD_EXP"); VAR_EXP="$(jqr '.variants[0].id')"
+  req POST "/admin/variants/$VAR_EXP/stock" '{"quantity":20,"reason":"expiry section"}' >/dev/null
+  st=$(req POST /admin/products "{\"sku\":\"EXPD-$RUN\",\"name\":\"Drop Sellado\",\"price\":30000,\"currency\":\"CLP\"}")
+  PROD_EXPD="$(jqr '.')"
+  st=$(req GET "/products/$PROD_EXPD"); VAR_EXPD="$(jqr '.variants[0].id')"
+  req PUT "/admin/variants/$VAR_EXPD/preorder" \
+    '{"capacity":50,"releaseDate":"2026-12-01T00:00:00Z","depositType":"Percentage","depositValue":30}' >/dev/null
+  [ -n "$VAR_EXP" ] && [ "$VAR_EXP" != "null" ] && [ "$VAR_EXPD" != "null" ] \
+    && ok 20.0 "productos de la sección listos" || ko 20.0 "sin variantes"
+
+  req GET "/variants/$VAR_EXP/stock" >/dev/null; ER0="$(jqr '.reserved')"
+
+  # --- A. el caso central: reserva sin pagar, se vence, el stock vuelve ---
+  st=$(checkout "exp-a-$RUN@test.cl" "$VAR_EXP" 2)
+  OA="$(jqr '.orderId')"; ATOK="$(jqr '.accessToken')"
+  assert_status 20.1a "checkout" 200 "$st"
+  [ "$(jqr '.reservationExpiresAt')" != "null" ] \
+    && ok 20.1b "el checkout devuelve el plazo (el front cuenta con esto)" \
+    || ko 20.1b "sin reservationExpiresAt en la respuesta del checkout"
+  req GET "/variants/$VAR_EXP/stock" >/dev/null
+  assert_eq 20.1c "reserva +2" "$((ER0+2))" "$(jqr '.reserved')"
+  # El plazo también viaja en la vista del invitado, que es quien corre contra ese reloj: sin
+  # esto su primera noticia de la ventana es un pago rechazado.
+  st=$(pub GET "/pay/$ATOK" "" "")
+  [ "$(jqr '.reservationExpiresAt')" != "null" ] \
+    && ok 20.1d "el invitado ve su plazo en /pay/{token}" \
+    || ko 20.1d "sin plazo en la vista del invitado"
+  backdate "$OA"
+
+  # --- B. ⭐ un pago parcial apaga el reloj para siempre ---
+  st=$(checkout "exp-b-$RUN@test.cl" "$VAR_EXP" 2); OB="$(jqr '.orderId')"
+  st=$(req POST "/admin/orders/$OB/payments" '{"amount":50000}')
+  assert_eq 20.2a "pago parcial -> Deposited" "Deposited" "$(jqr '.paymentStatus')"
+  req GET "/admin/orders/$OB" >/dev/null
+  assert_eq 20.2b "el pago borra el plazo" "null" "$(jqr '.reservationExpiresAt')"
+  # Y aunque se le vuelva a poner un vencimiento pasado a mano, el barredor no lo toca: el filtro
+  # es el estado de pago, no solo que el campo esté vacío.
+  backdate "$OB"
+
+  # --- C. iniciar el pago extiende la ventana ---
+  # Un pedido recién hecho tiene los 30 minutos completos, más que la gracia de 20: ahí extender no
+  # tiene nada que hacer y no debe recortar nada. El caso que importa es el contrario, el comprador
+  # que llega al final de su ventana y recién entonces va a pagar, así que se lo pone a 90 segundos
+  # del vencimiento. (90 y no negativo: con el plazo ya pasado el barredor lo cancelaría entre el
+  # UPDATE y el initiate y la prueba mediría una carrera.)
+  st=$(checkout "exp-c-$RUN@test.cl" "$VAR_EXP" 1); OC="$(jqr '.orderId')"
+  $PSQL -c "UPDATE orders SET reservation_expires_at = now() + interval '90 seconds' WHERE id = '$OC';" >/dev/null
+  req GET "/admin/orders/$OC" >/dev/null; DL_BEFORE="$(jqr '.reservationExpiresAt')"
+  st=$(pub POST "/orders/$OC/payments/initiate" '{"gateway":"Transfer","type":"Full"}')
+  assert_status 20.3a "initiate" 200 "$st"
+  req GET "/admin/orders/$OC" >/dev/null; DL_AFTER="$(jqr '.reservationExpiresAt')"
+  # Comparación lexicográfica: los dos vienen del mismo serializador, en UTC y con el mismo formato.
+  [ "$DL_AFTER" \> "$DL_BEFORE" ] \
+    && ok 20.3b "el plazo se corrió hacia adelante" \
+    || ko 20.3b "el plazo no se movió ($DL_BEFORE -> $DL_AFTER)"
+  # Y se corrió hasta la gracia, no un poco: de 90 segundos a más de 10 minutos.
+  assert_eq 20.3c "quedó a la distancia de PaymentGraceMinutes" "t" \
+    "$($PSQL -c "SELECT reservation_expires_at > now() + interval '10 minutes' FROM orders WHERE id = '$OC';" | tr -d '[:space:]')"
+
+  # --- D. la preventa también libera cupo ---
+  req GET "/variants/$VAR_EXPD/preorder" >/dev/null; ESD0="$(jqr '.soldCount')"
+  st=$(pub POST /orders "{\"customer\":{\"email\":\"exp-d-$RUN@test.cl\",\"phone\":\"+56944444444\"},\"items\":[{\"productVariantId\":\"$VAR_EXPD\",\"quantity\":3}]}")
+  OD="$(jqr '.orderId')"; assert_status 20.4a "checkout de preventa" 200 "$st"
+  req GET "/variants/$VAR_EXPD/preorder" >/dev/null
+  assert_eq 20.4b "cupo vendido +3" "$((ESD0+3))" "$(jqr '.soldCount')"
+  backdate "$OD"
+
+  # --- una sola espera para los cuatro escenarios ---
+  # Snapshot con las tres reservas puestas (A=2, B=2, C=1): así el delta que se mide después es
+  # exactamente lo que soltó A, sin depender de lo que haya reservado el resto del script.
+  req GET "/variants/$VAR_EXP/stock" >/dev/null; EA1="$(jqr '.available')"; ER1="$(jqr '.reserved')"
+  printf "  esperando %ss un ciclo del barredor...\n" "$EXPIRY_WAIT"
+  sleep "$EXPIRY_WAIT"
+
+  # A: ⭐ el stock vuelve solo, sin que nadie haga nada
+  req GET "/admin/orders/$OA" >/dev/null
+  assert_eq 20.5a "el pedido vencido queda Cancelled" "Cancelled" "$(jqr '.fulfillmentStatus')"
+  assert_eq 20.5b "y sin plazo" "null" "$(jqr '.reservationExpiresAt')"
+  req GET "/variants/$VAR_EXP/stock" >/dev/null
+  assert_eq 20.5c "vuelven las 2 unidades a available" "$((EA1+2))" "$(jqr '.available')"
+  assert_eq 20.5d "y salen de reserved (B y C siguen reservando)" "$((ER1-2))" "$(jqr '.reserved')"
+
+  # B: ⭐ la plata manda
+  req GET "/admin/orders/$OB" >/dev/null
+  assert_eq 20.6a "con plata adentro NO se cancela" "PendingPayment" "$(jqr '.fulfillmentStatus')"
+  assert_eq 20.6b "y sigue Deposited" "Deposited" "$(jqr '.paymentStatus')"
+
+  # C: la gracia del pago lo protegió
+  req GET "/admin/orders/$OC" >/dev/null
+  assert_eq 20.7 "el que está pagando sigue vivo" "PendingPayment" "$(jqr '.fulfillmentStatus')"
+
+  # D: el cupo del drop vuelve igual que el stock
+  req GET "/variants/$VAR_EXPD/preorder" >/dev/null
+  assert_eq 20.8a "soldCount vuelve a $ESD0" "$ESD0" "$(jqr '.soldCount')"
+  req GET "/admin/orders/$OD" >/dev/null
+  assert_eq 20.8b "la preventa vencida queda Cancelled" "Cancelled" "$(jqr '.fulfillmentStatus')"
+
+  # --- ⭐ nadie va a la pasarela por un pedido ya cancelado ---
+  # Sin esto el comprador paga con tarjeta un pedido que ya no existe y la plata queda cobrada
+  # esperando un reembolso a mano. Antes era un caso raro (cancelar era un acto humano); con el
+  # vencimiento automático deja de serlo.
+  st=$(pub POST "/orders/$OA/payments/initiate" '{"gateway":"Transfer","type":"Full"}')
+  assert_title 20.9 "initiate sobre un pedido cancelado" 409 "order.cancelled" "$st"
+fi
 
 # =============================================================================
 section "RESUMEN"

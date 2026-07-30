@@ -24,4 +24,8 @@ docs: |-
   La respuesta es a propósito más flaca que la del panel: total, pagado, saldo y
   líneas. Sin customerId, sin estado de fulfillment, sin referencias de pasarela.
 
+  Sí lleva `reservationExpiresAt` (4.6): quien corre contra ese reloj es justamente quien tiene
+  este link. Es su propio pedido, así que no revela nada que no sepa, y sin el plazo su primera
+  noticia de la ventana sería un pago rechazado sobre un pedido ya cancelado.
+
   Para pagar el saldo: `POST /pay/{token}/initiate` con `{"gateway":"Transfer"}`.

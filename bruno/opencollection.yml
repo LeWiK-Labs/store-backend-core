@@ -53,6 +53,13 @@ docs: |-
   `lewik_panel_session` y `lewik_store_session`. Ninguna credencial sirve en la
   puerta de otra población, y las tres políticas de tienda exigen tenant match.
 
+  ## Las reservas vencen (4.6)
+  Un pedido sin pagar retiene su stock (o su cupo de preventa) por
+  `Reservations:TtlMinutes` — 30 minutos, también en Development. Después un job lo
+  cancela solo y devuelve el stock, así que un pedido que quedó abierto en esta
+  colección puede aparecer `Cancelled` sin que nadie lo haya tocado. Cualquier pago,
+  aunque sea menor al abono, apaga ese reloj para siempre.
+
   Todo lo que cambia estado bajo `/admin` o `/platform` necesita además el header
   `X-Requested-With: LeWiKPanel` (capa extra sobre SameSite=Lax y CORS estricto).
   Las requests de esta colección ya lo llevan.

@@ -12,6 +12,7 @@ using LeWiK.Store.App.Orders.Domain;
 using LeWiK.Store.App.Preorders.Domain;
 using MediatR;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace LeWiK.Store.App.Orders;
 
@@ -26,7 +27,11 @@ public sealed record CheckoutCommand(
 // The token is the guest's only handle on this order. Once order details stopped being
 // readable by bare id — a GUID in a URL was enough to read a stranger's personal data — a
 // buyer with no account needs something to hold, and this is it.
-public sealed record CheckoutResponse(Guid OrderId, string AccessToken);
+//
+// ReservationExpiresAt is the deadline the storefront counts down to. It ships with the order
+// rather than needing a second call: the buyer has to learn the clock exists at the moment it
+// starts, or the feature is a surprise cancellation instead of a countdown.
+public sealed record CheckoutResponse(Guid OrderId, string AccessToken, DateTime? ReservationExpiresAt);
 
 public sealed record CustomerInfo(string Email, string Phone, string? Name);
 public sealed record CheckoutItem(Guid ProductVariantId, int Quantity);
@@ -59,7 +64,9 @@ public sealed class CheckoutValidator : AbstractValidator<CheckoutCommand>
     }
 }
 
-public sealed class CheckoutHandler(StoreDbContext db, ITenantContext tenant, PurchaseLimitEnforcer limitEnforcer)
+public sealed class CheckoutHandler(
+    StoreDbContext db, ITenantContext tenant, PurchaseLimitEnforcer limitEnforcer,
+    IOptions<ReservationSettings> reservations)
     : IRequestHandler<CheckoutCommand, Result<CheckoutResponse>>
 {
     public async Task<Result<CheckoutResponse>> Handle(CheckoutCommand request, CancellationToken ct)
@@ -172,6 +179,12 @@ public sealed class CheckoutHandler(StoreDbContext db, ITenantContext tenant, Pu
 
         db.Add(orderResult.Value);
 
+        // Start the soft-lock clock: an unpaid order does not hold stock forever, or one buyer
+        // who abandoned a checkout keeps a unit out of the store's window indefinitely.
+        if (reservations.Value.Enabled)
+            orderResult.Value.SetReservationWindow(
+                DateTime.UtcNow.AddMinutes(reservations.Value.TtlMinutes));
+
         // Issued here rather than by a later admin action: the buyer needs it the instant the
         // order exists, and there is nobody else in the loop to hand it to them. 60 days
         // outlives any reasonable preorder wait.
@@ -179,6 +192,7 @@ public sealed class CheckoutHandler(StoreDbContext db, ITenantContext tenant, Pu
         orderResult.Value.SetPaymentLink(OpaqueToken.Hash(accessToken), DateTime.UtcNow.AddDays(60));
 
         // UnitOfWorkBehavior commits everything atomically and dispatches domain events.
-        return new CheckoutResponse(orderResult.Value.Id, accessToken);
+        return new CheckoutResponse(
+            orderResult.Value.Id, accessToken, orderResult.Value.ReservationExpiresAt);
     }
 }

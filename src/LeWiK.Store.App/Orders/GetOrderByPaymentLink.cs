@@ -12,9 +12,13 @@ public sealed record GetOrderByPaymentLinkQuery(Guid OrderId) : IQuery<PaymentLi
 // Deliberately thinner than OrderResponse: whoever holds the link is unauthenticated, so this
 // carries only what it takes to recognise the purchase and know what is owed. No customer id,
 // no fulfillment detail, no gateway references.
+//
+// The reservation deadline is in here because the person racing that clock is exactly the person
+// holding this link. It is their own order, so it discloses nothing they don't already know, and
+// without it their first sign of the window is a payment refused on a cancelled order.
 public sealed record PaymentLinkOrderResponse(
     Guid OrderId, string Currency, decimal Total, decimal Paid, decimal Balance,
-    string PaymentStatus, IReadOnlyList<PaymentLinkLine> Lines);
+    string PaymentStatus, DateTime? ReservationExpiresAt, IReadOnlyList<PaymentLinkLine> Lines);
 
 public sealed record PaymentLinkLine(string Name, int Quantity, decimal UnitPrice);
 
@@ -30,7 +34,7 @@ public sealed class GetOrderByPaymentLinkHandler(StoreDbContext db)
             .Where(o => o.Id == request.OrderId)
             .Select(o => new PaymentLinkOrderResponse(
                 o.Id, o.Currency, o.TotalAmount, o.PaidAmount, o.BalanceAmount,
-                o.PaymentStatus.ToString(),
+                o.PaymentStatus.ToString(), o.ReservationExpiresAt,
                 o.Lines.Select(l => new PaymentLinkLine(l.NameSnapshot, l.QtyOrdered, l.UnitPrice.Amount)).ToList()))
             .FirstOrDefaultAsync(ct);
 
