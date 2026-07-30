@@ -22,8 +22,15 @@ internal sealed class OrderConfiguration : IEntityTypeConfiguration<Order>
         builder.Property(o => o.Currency).IsRequired().HasMaxLength(3);
         builder.Property(o => o.TotalAmount).HasPrecision(14, 4).IsRequired();
         builder.Property(o => o.PaidAmount).HasPrecision(14, 4).IsRequired();
+        builder.Property(o => o.RefundedAmount).HasPrecision(14, 4).IsRequired();
         builder.Property(o => o.DepositDueAmount).HasPrecision(14, 4).IsRequired();
         builder.Property(o => o.ReservationExpiresAt);
+
+        // SHA-256 hex = 64 chars. The public lookup arrives with no tenant and no order id,
+        // so this index is the only thing standing between a link click and a full scan.
+        builder.Property(o => o.PaymentLinkHash).HasMaxLength(64).IsRequired(false);
+        builder.HasIndex(o => o.PaymentLinkHash);
+        builder.Property(o => o.PaymentLinkExpiresAt).IsRequired(false);
 
         builder.Property(o => o.CreatedAt).IsRequired();
         builder.Property(o => o.UpdatedAt).IsRequired();
@@ -34,6 +41,15 @@ internal sealed class OrderConfiguration : IEntityTypeConfiguration<Order>
             .HasForeignKey(l => l.OrderId)
             .OnDelete(DeleteBehavior.Cascade);
         builder.Navigation(o => o.Lines).UsePropertyAccessMode(PropertyAccessMode.Field);
+
+        // PaidAmount is read-modify-write, so concurrent payments on the same order must not
+        // silently overwrite each other: a machine-driven webhook can deliver two notifications
+        // at once. uint rowversion mapped to Postgres' xmin system column (same as Inventory);
+        // the conflict surfaces as DbUpdateConcurrencyException and ConcurrencyRetryBehavior
+        // re-runs the handler against fresh state.
+        builder.Property<uint>("xmin")
+            .HasColumnName("xmin")
+            .IsRowVersion();
 
         // Calculated props (BalanceAmount, Total, Balance) have no setter → EF ignores them.
     }

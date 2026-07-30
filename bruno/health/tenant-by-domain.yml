@@ -1,0 +1,45 @@
+# tenant-by-domain.yml
+info: { name: Tenant by Domain, type: http, seq: 4 }
+http:
+  method: GET
+  url: "{{baseUrl}}/health/tenant"
+  headers:
+    # El camino real de producción: la tienda sale de acá.
+    - name: Host
+      value: "panel.{{storeSlug}}.localhost"
+      enabled: true
+    # Pisa el header heredado de la colección, para que la resolución sea por
+    # dominio y no por la comodidad de desarrollo.
+    - name: X-Tenant-Id
+      value: ""
+      enabled: true
+  auth: inherit
+runtime:
+  scripts:
+    - type: tests
+      code: |-
+        test("returns 200", function() { expect(res.status).to.equal(200); });
+        test("resolvió una tienda", function() { expect(res.body.tenantId).to.be.a("string"); });
+settings: { encodeUrl: true }
+docs: |-
+  # Tenant by Domain
+  Lo mismo que *Tenant Health*, pero resolviendo la tienda como en producción:
+  por el dominio. `*.localhost` apunta a 127.0.0.1 sin tocar el archivo hosts, y
+  en dev `Tenancy:BaseDomain` es `localhost`, así que `panel.cardshop.localhost`
+  recorre el mismo código que `panel.cardshop.lewik.app`.
+
+  `storeSlug` lo deja **Platform > Create Store** en el environment.
+
+  Probá cambiando el header `Host`:
+  - `{{storeSlug}}.localhost` → la misma tienda (el prefijo `panel.` se descarta)
+  - `noexiste.localhost` → `no tenant resolved`
+  - `panel.localhost` → tampoco: los subdominios reservados de la plataforma
+    (`www`, `panel`, `api`, `admin`, `app`, `static`, `cdn`) nunca son tiendas
+  - `a.b.{{storeSlug}}.localhost` → tampoco: bajo el dominio base solo existen
+    `slug.base` y `panel.slug.base`, y adivinar cuál etiqueta es el slug
+    apuntaría un host que no publicamos a una tienda real
+
+  ⚠️ Si tu cliente igual manda el `X-Tenant-Id` heredado, el header gana en dev y
+  esta request no prueba nada. Para verificarlo a mano: vaciá `tenantId` en el
+  environment — esta sigue resolviendo y las demás dejan de andar. La prueba
+  seria vive en `scripts/smoke-test.sh` (sección 18), que nunca manda el header.

@@ -1,0 +1,35 @@
+info:
+  name: Platform Login
+  type: http
+  seq: 2
+http:
+  method: POST
+  url: "{{baseUrl}}/auth/platform/login"
+  headers:
+    - name: Content-Type
+      value: application/json
+  body:
+    type: json
+    data: |-
+      {
+        "email": "{{operatorEmail}}",
+        "password": "{{operatorPassword}}"
+      }
+  auth: inherit
+runtime:
+  scripts:
+    - type: tests
+      code: |-
+        test("returns 200", function() { expect(res.status).to.equal(200); });
+settings:
+  encodeUrl: true
+docs: |-
+  # Platform Login
+  Sesión de operador de LeWiK: cruza tiendas, no pertenece a ninguna. Habilita
+  `/platform/*`.
+
+  Cookie propia (`lewik_platform_session`) y esquema propio: una cookie de staff
+  nunca satisface una política de plataforma, ni al revés.
+
+  El primer operador se siembra por config (`Platform:SeedOperatorEmail` /
+  `SeedOperatorPassword`) y se saca después.

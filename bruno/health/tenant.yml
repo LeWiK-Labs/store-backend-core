@@ -2,4 +2,10 @@
 info: { name: Tenant Health, type: http, seq: 2 }
 http: { method: GET, url: "{{baseUrl}}/health/tenant", auth: inherit }
 settings: { encodeUrl: true }
-docs: "Refleja el tenant resuelto desde el header. Útil para confirmar el environment activo."
+docs: |-
+  Refleja el tenant que resolvió el middleware. Con el header heredado de la
+  colección, confirma el environment activo.
+
+  Sin header y sin un dominio que resuelva, responde `no tenant resolved` en vez
+  de fallar: los comandos mueren después en el guard de tenant y las lecturas
+  vuelven vacías. Cierra en ambos casos.

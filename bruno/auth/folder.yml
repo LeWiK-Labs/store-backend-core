@@ -1,0 +1,15 @@
+info: { name: Auth, type: folder, seq: 0 }
+docs: |-
+  Login de las poblaciones que operan el sistema. Corré uno de estos ANTES que nada:
+  desde 4.3 todo lo que vive bajo `/admin` y `/platform` exige sesión, y Bruno
+  guarda la cookie automáticamente por dominio.
+
+  - **Staff login** → habilita todo `/admin/*` de la tienda del environment activo.
+  - **Platform login** → habilita `/platform/*` (crear y listar tiendas).
+
+  La tercera población, el comprador, vive en **Account (buyer)**: cookie, scheme y
+  tabla propios, así que ninguna de estas tres credenciales sirve en la puerta de
+  otra. Cada una es un `AuthenticationHandler` distinto que consulta su propia
+  tabla, no un rol distinto sobre un mismo token.
+
+  El token nunca vuelve en el body: viaja en una cookie HttpOnly, host-only.

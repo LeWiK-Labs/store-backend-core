@@ -1,8 +1,34 @@
-name: local-tenant-a
+name: local-tenant-b
 variables:
   - name: baseUrl
     value: http://localhost:5223
     enabled: true
+  # Segunda tienda real. Sirve para ver el aislamiento: logueate en A, cambiá a
+  # este environment SIN volver a loguearte, y todo /admin responde 403 — la
+  # sesión es válida, la tienda no.
   - name: tenantId
-    value: 22222222-2222-2222-2222-222222222222
+    value: ""
+    enabled: true
+  - name: storeSlug
+    value: otratienda
+    enabled: true
+  - name: staffEmail
+    value: dueno@otratienda.cl
+    enabled: true
+  - name: staffPassword
+    value: password-larga-123
+    enabled: true
+  - name: operatorEmail
+    value: admin@lewik.cl
+    enabled: true
+  - name: operatorPassword
+    value: cambiar-esto-ya-1234
+    enabled: true
+  # Mismo email que en la tienda A a propósito: la unicidad es por tienda, así que
+  # son dos clientes distintos con contraseñas distintas.
+  - name: customerEmail
+    value: cliente@test.cl
+    enabled: true
+  - name: customerPassword
+    value: micontrasena456
     enabled: true

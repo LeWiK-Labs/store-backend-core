@@ -2,4 +2,14 @@
 info: { name: Entitlement Health, type: http, seq: 3 }
 http: { method: GET, url: "{{baseUrl}}/health/entitlement", auth: inherit }
 settings: { encodeUrl: true }
-docs: "Devuelve el entitlement del back-office (stub: active + store access)."
+docs: |-
+  El entitlement del tenant activo. Desde 4.4 sale de la tabla `stores`, no del
+  stub: `isActive` sigue el estado real de la tienda y `planCode` viene `null`
+  porque todavía no hay planes modelados (el stub inventaba `stub-pro` y decía
+  que sí a cualquier GUID).
+
+  Un tenant que no existe da **404**, no un entitlement inactivo: una tienda que
+  no está no es una tienda suspendida.
+
+  `IBackOfficeClient` queda como costura — si el back-office se separa en su
+  propio servicio, cambia solo la implementación.

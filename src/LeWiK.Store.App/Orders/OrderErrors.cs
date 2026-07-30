@@ -15,8 +15,16 @@ public static class OrderErrors
         Error.Conflict("order.already_paid", "The order is already fully paid.");
     public static Error PaymentExceedsBalance(decimal amount, decimal balance) =>
         Error.Conflict("order.payment_exceeds_balance", $"Payment {amount} exceeds balance {balance}.");
+    public static Error RefundExceedsPaid(decimal amount, decimal refundable) =>
+        Error.Conflict("order.refund_exceeds_paid", $"Refund {amount} exceeds the refundable {refundable} on this order.");
     public static Error BalancePending() =>
         Error.Conflict("order.balance_pending", "The order still has a pending balance.");
+    // Not an error a human can cause: only the expiry worker asks for a conditional cancel, and
+    // this is the answer when the order stopped qualifying between the candidate query and the
+    // cancel — it got paid, or someone cancelled it first.
+    public static Error ReservationNotExpired(Guid orderId) =>
+        Error.Conflict("order.reservation_not_expired",
+            $"Order {orderId} no longer has a lapsed reservation.");
     public static Error CannotCancelDelivered() =>
         Error.Conflict("order.cannot_cancel_delivered", "A delivered order cannot be cancelled.");
     public static Error LineNotFound(Guid lineId) =>
@@ -29,6 +37,10 @@ public static class OrderErrors
         Error.NotFound("order.variant_not_found", $"Variant {variantId} was not found.");
     public static Error VariantHasNoStock(Guid variantId) =>
         Error.Conflict("order.no_stock", $"Variant {variantId} has no inventory to sell from.");
+    public static Error PaymentLinkInvalid() =>
+        Error.NotFound("order.payment_link_invalid", "This payment link is invalid or has expired.");
+    public static Error NothingToPay() =>
+        Error.Conflict("order.nothing_to_pay", "This order has no pending balance.");
     public static Error OrderNotFound(Guid orderId) =>
         Error.NotFound("order.not_found", $"Order {orderId} was not found.");
     public static Error PreorderStockMissing(string sku) =>

@@ -1,0 +1,23 @@
+info:
+  name: Logout
+  type: http
+  seq: 3
+http:
+  method: POST
+  url: "{{baseUrl}}/auth/customer/logout"
+  auth: inherit
+runtime:
+  scripts:
+    - type: tests
+      code: |-
+        test("returns 204", function() { expect(res.status).to.equal(204); });
+settings:
+  encodeUrl: true
+docs: |-
+  # Logout
+  Revoca la sesión en el servidor **y** borra la cookie. Lo primero es lo que
+  importa: sin eso, un token robado seguiría sirviendo hasta que venciera la caché.
+
+  No está detrás de ninguna política, a propósito: si lo estuviera, una cookie ya
+  muerta sería imposible de limpiar. Es idempotente — un token desconocido también
+  responde 204.

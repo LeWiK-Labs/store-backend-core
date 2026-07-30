@@ -4,8 +4,10 @@ info:
   seq: 1
 http:
   method: POST
-  url: "{{baseUrl}}/variants/{{variantId}}/stock"
+  url: "{{baseUrl}}/admin/variants/{{variantId}}/stock"
   headers:
+    - name: X-Requested-With
+      value: LeWiKPanel
     - name: Content-Type
       value: application/json
   body:

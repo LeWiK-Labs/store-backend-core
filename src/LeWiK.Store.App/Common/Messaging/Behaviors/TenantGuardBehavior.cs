@@ -7,8 +7,10 @@ public sealed class TenantGuardBehavior<TRequest, TResponse>(ITenantContext tena
 {
     public Task<TResponse> Handle(TRequest request, RequestHandlerDelegate<TResponse> next, CancellationToken ct)
     {
-        if (!tenant.HasTenant) throw new MissingTenantException();
-        
+        // Platform-level commands say so on the request type; everything else must arrive
+        // with a resolved tenant.
+        if (request is not ITenantAgnostic && !tenant.HasTenant) throw new MissingTenantException();
+
         return next();
     }
 }

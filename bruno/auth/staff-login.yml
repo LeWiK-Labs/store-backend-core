@@ -1,0 +1,46 @@
+info:
+  name: Staff Login
+  type: http
+  seq: 1
+http:
+  method: POST
+  url: "{{baseUrl}}/auth/staff/login"
+  headers:
+    - name: Content-Type
+      value: application/json
+  body:
+    type: json
+    data: |-
+      {
+        "email": "{{staffEmail}}",
+        "password": "{{staffPassword}}"
+      }
+  auth: inherit
+runtime:
+  scripts:
+    - type: tests
+      code: |-
+        test("returns 200", function() { expect(res.status).to.equal(200); });
+        test("no token in the body", function() { expect(res.body.token).to.be.undefined; });
+settings:
+  encodeUrl: true
+docs: |-
+  # Staff Login
+  Abre sesión en el panel de la tienda del environment activo (el tenant sale del
+  header `X-Tenant-Id`, igual que todo lo demás).
+
+  La respuesta trae `displayName`, `role` y `expiresAt`. **El token no está en el
+  body**: viaja en la cookie `lewik_panel_session`, HttpOnly y sin atributo Domain,
+  así que el panel nunca la comparte con el storefront.
+
+  ## Después de esto
+  Todo `/admin/*` responde. Ojo con las alturas:
+  - **StoreStaff** — catálogo, stock, drops, pedidos, pagos, reembolsos
+  - **StoreAdmin** (owner/admin) — `/admin/staff/*`
+  - **StoreOwner** — `/admin/payment-methods/*`
+
+  ## Respuestas
+  - **200** — sesión abierta
+  - **400** `auth.invalid_credentials` — mismo error exista o no la cuenta
+  - **409** `auth.account_disabled` — usuario desactivado
+  - **409** `platform.store_suspended` — la tienda está suspendida

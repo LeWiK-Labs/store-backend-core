@@ -11,4 +11,25 @@ public static class PaymentErrors
         Error.Conflict("payment.gateway_not_configured", $"The store has no active {gateway} configuration.");
     public static Error PaymentNotFound(Guid paymentId) =>
         Error.NotFound("payment.not_found", $"Payment {paymentId} was not found.");
+    public static Error InvalidCredentials(PaymentGateway gateway) =>
+        Error.Conflict("payment.invalid_credentials", $"The stored {gateway} credentials are incomplete or malformed.");
+    public static Error UnsupportedCurrency(PaymentGateway gateway, string currency) =>
+        Error.Conflict("payment.unsupported_currency", $"{gateway} does not support {currency}.");
+    public static Error GatewayFailure(PaymentGateway gateway, string reason) =>
+        Error.Conflict("payment.gateway_failure", $"{gateway} rejected the request: {reason}");
+    public static Error TokenNotFound() =>
+        Error.NotFound("payment.token_not_found", "No pending payment matches that gateway token.");
+    public static Error InvalidWebhookSignature(PaymentGateway gateway) =>
+        Error.Conflict("payment.invalid_webhook_signature", $"The {gateway} notification signature did not validate.");
+
+    public static Error RefundAlreadyResolved(Guid refundId, RefundState state) =>
+        Error.Conflict("refund.already_resolved", $"Refund {refundId} is already {state}.");
+    public static Error PaymentNotRefundable(Guid paymentId, PaymentState state) =>
+        Error.Conflict("refund.payment_not_refundable",
+            $"Payment {paymentId} is {state}; only succeeded payments can be refunded.");
+    public static Error RefundExceedsPayment(decimal requested, decimal refundable) =>
+        Error.Conflict("refund.exceeds_payment",
+            $"Refund {requested} exceeds the refundable {refundable} of this payment.");
+    public static Error RefundNotSupported(PaymentGateway gateway) =>
+        Error.Conflict("refund.not_supported", $"{gateway} refunds are not automated; register it manually.");
 }

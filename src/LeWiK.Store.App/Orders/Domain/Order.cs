@@ -13,8 +13,16 @@ public sealed class Order : AggregateRoot, ITenantScoped, IAuditable
     public string Currency { get; private init; } = null!;
     public decimal TotalAmount { get; private set; }
     public decimal PaidAmount { get; private set; }
+    public decimal RefundedAmount { get; private set; }     // separate axis; see ApplyRefund
     public decimal DepositDueAmount { get; private set; }   // required to move forward (abono); == total if pay-in-full
     public DateTime? ReservationExpiresAt { get; private set; }
+
+    // Opaque single-purpose link so a guest can pay their balance without an account.
+    // Only the HASH lives here: reading the database gives you no working payment links.
+    // The consequence is deliberate — the raw token is shown once, at issue time, and a lost
+    // link is reissued rather than re-read.
+    public string? PaymentLinkHash { get; private set; }
+    public DateTime? PaymentLinkExpiresAt { get; private set; }
     public DateTime CreatedAt { get; private set; }
     public DateTime UpdatedAt { get; private set; }
 
@@ -22,6 +30,7 @@ public sealed class Order : AggregateRoot, ITenantScoped, IAuditable
     public IReadOnlyCollection<OrderLine> Lines => _lines.AsReadOnly();
 
     public decimal BalanceAmount => TotalAmount - PaidAmount;
+    public decimal NetPaidAmount => PaidAmount - RefundedAmount;   // what the store actually kept
     public Money Total => new(TotalAmount, Currency);
     public Money Balance => new(BalanceAmount, Currency);
     
@@ -80,6 +89,55 @@ public sealed class Order : AggregateRoot, ITenantScoped, IAuditable
 
         PaidAmount += amount;
         RecalculatePaymentStatus();
+
+        // Any money received means a human decides from here on: stop the sweeper. Cancelling an
+        // order with a peso on it automatically would create a refund with nobody in the loop.
+        if (PaymentStatus != PaymentStatus.Pending)
+            ClearReservationWindow();
+
+        return Result.Success();
+    }
+
+    // ---- Soft-lock window ----
+    // While the order is unpaid, its reservation goes back to stock (or to the drop's capacity)
+    // when the window lapses. Reserving at add-to-cart instead would let a scalper hoard a whole
+    // drop for free; this is the same protection applied where a buyer has actually committed.
+    public void SetReservationWindow(DateTime expiresAt) => ReservationExpiresAt = expiresAt;
+
+    // Buyer is mid-payment at a gateway: never shorten, only push the deadline out. A null window
+    // stays null — an order that was never on the clock does not get put on one by paying.
+    public void ExtendReservation(DateTime expiresAt)
+    {
+        if (ReservationExpiresAt is not null && expiresAt > ReservationExpiresAt)
+            ReservationExpiresAt = expiresAt;
+    }
+
+    public void ClearReservationWindow() => ReservationExpiresAt = null;
+
+    // The sweeper's whole precondition, in one place and on the aggregate: it is re-checked inside
+    // the cancelling transaction, not only when the candidate list was built.
+    public bool IsReservationExpired(DateTime now) =>
+        FulfillmentStatus == FulfillmentStatus.PendingPayment
+        && PaymentStatus == PaymentStatus.Pending
+        && ReservationExpiresAt is not null
+        && ReservationExpiresAt < now;
+
+    // Refunds are their own axis. PaymentStatus keeps recording what was CHARGED, which stays
+    // historically true; walking it backwards would break its monotonic invariant and the
+    // AlreadyPaid guard, and would let an already-settled order be charged again. The front
+    // shows "paid" and "refunded" as two numbers.
+    //
+    // Deliberately allowed on a cancelled order: cancel (releases stock) and refund (returns
+    // the money) are separate decisions, and cancelling then refunding is the common case.
+    public Result ApplyRefund(decimal amount)
+    {
+        if (amount <= 0)
+            throw new ArgumentOutOfRangeException(nameof(amount), "Refund must be positive.");
+        if (amount > PaidAmount - RefundedAmount)
+            return OrderErrors.RefundExceedsPaid(amount, PaidAmount - RefundedAmount);
+
+        RefundedAmount += amount;
+        Raise(new OrderRefunded(TenantId, Id, CustomerId, amount));
         return Result.Success();
     }
 
@@ -170,6 +228,28 @@ public sealed class Order : AggregateRoot, ITenantScoped, IAuditable
         return Result.Success();
     }
 
+    // ---- Guest payment link ----
+    // Issuing a new link overwrites the old hash, so the previous link stops resolving.
+    // Revocation comes free with reissue rather than needing its own bookkeeping.
+    public void SetPaymentLink(string tokenHash, DateTime expiresAt)
+    {
+        PaymentLinkHash = tokenHash;
+        PaymentLinkExpiresAt = expiresAt;
+    }
+
+    public void RevokePaymentLink()
+    {
+        PaymentLinkHash = null;
+        PaymentLinkExpiresAt = null;
+    }
+
+    // A cancelled order is excluded here rather than only at issue time: the order can be
+    // cancelled AFTER the link was sent, and the link is already sitting in someone's chat.
+    public bool IsPaymentLinkValid(DateTime now) =>
+        PaymentLinkHash is not null
+        && PaymentLinkExpiresAt > now
+        && FulfillmentStatus != FulfillmentStatus.Cancelled;
+
     // ---- Cancellation ----
     public Result Cancel()
     {
@@ -178,6 +258,9 @@ public sealed class Order : AggregateRoot, ITenantScoped, IAuditable
         if (FulfillmentStatus == FulfillmentStatus.Cancelled)
             return OrderErrors.OrderCancelled();
         FulfillmentStatus = FulfillmentStatus.Cancelled;
+        // The reservation is gone, so the deadline it had is meaningless: leaving it would show a
+        // live countdown on a dead order and let a later payment attempt push it further out.
+        ClearReservationWindow();
         Raise(new OrderCancelled(TenantId, Id, CustomerId));
         return Result.Success();
     }

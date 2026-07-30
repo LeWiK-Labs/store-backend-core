@@ -1,10 +1,17 @@
+using LeWiK.Store.Api.Auth;
 using LeWiK.Store.Api.Catalog;
+using LeWiK.Store.Api.Customers;
 using LeWiK.Store.Api.Inventory;
 using LeWiK.Store.Api.Orders;
 using LeWiK.Store.Api.Payments;
+using LeWiK.Store.Api.Platform;
 using LeWiK.Store.Api.Preorders;
+using LeWiK.Store.Api.Storefront;
+using LeWiK.Store.App.Platform;
+using LeWiK.Store.App.Platform.Domain;
 using LeWiK.Store.App.Common;
 using LeWiK.Store.App.Common.BackOffice;
+using LeWiK.Store.App.Common.Security;
 using LeWiK.Store.App.Common.Persistence;
 using LeWiK.Store.App.Common.Tenancy;
 using Microsoft.EntityFrameworkCore;
@@ -18,11 +25,21 @@ builder.Services.AddCors(options =>
     options.AddPolicy("Frontend", policy => policy
         .WithOrigins(builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ?? [])
         .AllowAnyHeader()
-        .AllowAnyMethod());
+        .AllowAnyMethod()
+        // Session cookies travel cross-origin from the panel, and credentials are incompatible
+        // with a wildcard origin — which is why the explicit allow-list has been there from
+        // the start. The front must send credentials: 'include'.
+        .AllowCredentials());
 });
 
-builder.Services.AddStoreApp(builder.Configuration.GetConnectionString("Default")!, redisConnection);
+// The Api assembly goes in as a handler assembly: the SignalR broadcasters are INotificationHandlers
+// and SignalR belongs to the host, not to App. One AddMediatR call, so the behavior order lives in
+// exactly one place — see AddStoreApp.
+builder.Services.AddStoreApp(builder.Configuration.GetConnectionString("Default")!, redisConnection,
+    builder.Configuration, typeof(LeWiK.Store.Api.Realtime.StoreHub).Assembly);
+builder.Services.AddStoreAuth();
 builder.Services.AddExceptionHandler<LeWiK.Store.Api.Common.GlobalExceptionHandler>();
+builder.Services.AddHostedService<LeWiK.Store.Api.Workers.ReservationExpiryWorker>();
 builder.Services.AddProblemDetails();
 
 var signalR = builder.Services.AddSignalR();
@@ -36,6 +53,16 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 
 var app = builder.Build();
 
+// Refuse to start with the tenant header override enabled outside Development: it would let
+// anyone operate any store by sending X-Tenant-Id. Crashing on boot is the point — a
+// misconfiguration this severe must not survive as a warning nobody reads.
+if (!app.Environment.IsDevelopment()
+    && app.Configuration.GetValue<bool>("Tenancy:AllowHeaderOverride"))
+{
+    throw new InvalidOperationException(
+        "Tenancy:AllowHeaderOverride must be false outside Development.");
+}
+
 // Apply pending migrations on startup (containerized dev convenience; off by default,
 // enabled via Database__MigrateOnStartup env var in docker-compose only).
 if (app.Configuration.GetValue<bool>("Database:MigrateOnStartup"))
@@ -45,11 +72,40 @@ if (app.Configuration.GetValue<bool>("Database:MigrateOnStartup"))
         .Database.Migrate();
 }
 
+// Bootstrap the first platform operator — the chicken-and-egg exit, since creating operators
+// will require being one. Config-gated: set the values once, start, then remove them. Does
+// nothing if any operator already exists, so it is safe to leave configured by accident.
+var seedEmail = app.Configuration["Platform:SeedOperatorEmail"];
+var seedPassword = app.Configuration["Platform:SeedOperatorPassword"];
+if (!string.IsNullOrWhiteSpace(seedEmail) && !string.IsNullOrWhiteSpace(seedPassword))
+{
+    using var seedScope = app.Services.CreateScope();
+    var seedDb = seedScope.ServiceProvider.GetRequiredService<StoreDbContext>();
+    if (!await seedDb.Set<PlatformOperator>().AnyAsync())
+    {
+        var hasher = seedScope.ServiceProvider.GetRequiredService<PasswordHasher>();
+        seedDb.Add(new PlatformOperator(seedEmail, "Platform Admin", hasher.Hash(seedPassword)));
+        await seedDb.SaveChangesAsync();
+    }
+}
+
 app.UseExceptionHandler();
 app.UseCors("Frontend");
 
+// signalr-test.html (4.7) is served by the API itself so it is same-origin: opened from disk it
+// would be origin "null" and CORS — an explicit allow-list, because AllowCredentials forbids a
+// wildcard — would block the hub's negotiate before anything could be seen. Served from here,
+// http://<slug>.localhost:5223/signalr-test.html also picks its tenant from the URL, which is
+// what makes the isolation check a matter of typing a different hostname.
+if (app.Environment.IsDevelopment()) app.UseStaticFiles();
+
 //Middlewares
 app.UseMiddleware<LeWiK.Store.Api.Tenancy.TenantResolutionMiddleware>();
+
+// Order matters: the tenant has to be resolved before TenantMatchRequirement can compare the
+// session's store against the requested one.
+app.UseAuthentication();
+app.UseAuthorization();
 
 app.MapGet("/", () => "Hello World!");
 
@@ -68,6 +124,11 @@ app.MapInventoryEndpoints();
 app.MapPreorderEndpoints();
 app.MapOrderEndpoints();
 app.MapPaymentEndpoints();
+app.MapPaymentLinkEndpoints();
+app.MapPlatformEndpoints();
+app.MapAuthEndpoints();
+app.MapCustomerAuthEndpoints();
+app.MapStorefrontEndpoints();
 
 // TEMPORARY smoke endpoint — remove once entitlement is enforced for real
 app.MapGet("/health/entitlement", async (ITenantContext tenant, IBackOfficeClient backOffice) =>

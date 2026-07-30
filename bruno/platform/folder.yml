@@ -1,0 +1,7 @@
+info: { name: Platform, type: folder, seq: 7 }
+docs: |-
+  Administración de LeWiK: crear, listar, suspender y reactivar tiendas. Exige
+  sesión de **PlatformOperator** (Auth > Platform Login).
+
+  El id que devuelve Create Store ES el tenant id de todo el resto del sistema:
+  pegalo en `tenantId` del environment.

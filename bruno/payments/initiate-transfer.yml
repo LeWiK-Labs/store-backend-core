@@ -26,9 +26,16 @@ docs: |-
   - `gateway` — `Transfer` | `Webpay` | `MercadoPago`
   - `type` — `Full` (todo el saldo) | `Deposit` (el abono) | `Balance` (saldo restante)
 
+  Desde 4.6, iniciar un pago **corre el plazo de la reserva** hasta
+  `Reservations:PaymentGraceMinutes` (nunca lo acorta): el comprador está en la pasarela poniendo
+  la tarjeta y el barredor no puede cancelarle el pedido en el medio. Y no se puede iniciar un
+  pago sobre un pedido cancelado, que es el otro lado del mismo problema: pagar algo que ya no
+  existe deja la plata cobrada esperando un reembolso a mano.
+
   ## Respuestas
   - **200** — `{ paymentId, gateway, amount, currency, redirectUrl, bankDetails }`
     (para transferencia: `bankDetails` con los datos, `redirectUrl` null)
   - **409** `payment.gateway_not_configured` — la tienda no configuró esa pasarela
   - **409** `order.already_paid` — no hay saldo que cobrar
+  - **409** `order.cancelled` — el pedido está cancelado (venció su reserva, o lo canceló la tienda)
   - **404** `order.not_found`

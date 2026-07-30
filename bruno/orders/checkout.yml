@@ -23,7 +23,11 @@ runtime:
     - type: tests
       code: |-
         test("returns 200", function() { expect(res.status).to.equal(200); });
-        if (res.status === 200) { bru.setEnvVar("orderId", res.body); }
+        if (res.status === 200) {
+  bru.setEnvVar("orderId", res.body.orderId);
+  // Token de acceso del invitado: con esto ve y paga su pedido sin cuenta.
+  bru.setEnvVar("accessToken", res.body.accessToken);
+}
 settings:
   encodeUrl: true
 examples:
@@ -45,6 +49,14 @@ examples:
             "customer": { "email": "scalper@test.cl", "phone": "+56911111111" },
             "items": [ { "productVariantId": "{{variantId}}", "quantity": 99 } ]
           }
+  - name: Signed-in buyer (no contact details)
+    http:
+      body:
+        type: json
+        data: |-
+          {
+            "items": [ { "productVariantId": "{{variantId}}", "quantity": 1 } ]
+          }
 docs: |-
   # Checkout
   Coloca un pedido para el tenant activo. Resuelve el comprador (invitado por email),
@@ -53,14 +65,29 @@ docs: |-
 
   Guarda el id del pedido en `orderId`.
 
+  Desde 4.6 la respuesta trae `reservationExpiresAt`: el pedido retiene su stock por
+  `Reservations:TtlMinutes` (30 en producción y en Development) y después un job en segundo plano
+  lo cancela y devuelve el stock. El front cuenta hacia ese plazo. **No** hay reserva al agregar
+  al carrito, y es a propósito: reservar ahí dejaría a un revendedor acaparando un drop entero sin
+  pagar ni poner una tarjeta.
+
+  Desde 4.5 mira si hay sesión de comprador (`Account (buyer) > Login`). Si la hay, el
+  pedido queda asociado a esa cuenta y **`customer` pasa a ser opcional** — el id sale de
+  los claims, nunca del body, así que nadie puede comprar a nombre de otro. Sin sesión
+  sigue siendo un invitado y los datos de contacto son obligatorios.
+
   ## Body
-  - `customer` — `{ email, phone, name? }` (invitado; si el email ya existe, reusa el cliente)
+  - `customer` — `{ email, phone, name? }`; obligatorio **solo sin sesión**. Con sesión
+    sirve para corregir el contacto. El email se normaliza a minúsculas: dos grafías del
+    mismo email serían dos clientes, dos historiales y dos contadores anti-scalping.
   - `items[]` — `{ productVariantId, quantity }`
 
   ## Examples
   - **Happy path** — compra normal desde stock → **200** con el GUID del pedido.
   - **Limit exceeded** — cantidad por encima del límite configurado → **409**
     `order.limit_per_order` o `order.limit_per_customer` (requiere un límite configurado antes).
+  - **Signed-in buyer** — sin `customer`; requiere haber corrido *Login* antes. Sin sesión
+    devuelve **400**.
 
   ## Respuestas
   - **200** — GUID del pedido
