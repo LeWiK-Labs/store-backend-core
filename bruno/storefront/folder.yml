@@ -1,0 +1,22 @@
+info: { name: Storefront, type: folder, seq: 8 }
+docs: |-
+  La vidriera, en una sola llamada. Es un **read de composición**: cruza catálogo,
+  inventario, preventas y topes de compra, que como módulos siguen separados para
+  escribir. La separación es de escritura; una lectura de presentación puede cruzarlos.
+
+  Existe porque el front, si no, necesita N+1 llamadas: listar productos y después
+  pedir stock o cupo de cada variante. Para una página de catálogo eso no da.
+
+  ## El contador en vivo (SignalR)
+  Los números de acá se mueven solos. El hub está en `/hubs/store` y no se puede
+  probar desde Bruno, así que la API sirve una página de prueba en Development:
+
+      http://<slug>.localhost:5223/signalr-test.html
+
+  Pegá un `variantId`, apretá *Mirar*, y hacé un *Checkout* de esa variante desde
+  Bruno: el número baja sin refrescar. Abrí la misma página en el slug de OTRA
+  tienda mirando el MISMO `variantId` y no llega nada — el grupo de SignalR lleva
+  el tenant, que se resuelve del host al conectar y nunca lo manda el cliente.
+
+  Con la tienda suspendida el hub tampoco atiende: rechaza la conexión con
+  `platform.store_suspended`, igual que el resto de la superficie.

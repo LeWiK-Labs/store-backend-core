@@ -41,6 +41,13 @@
 # sección 20 corre el vencimiento hacia atrás con `docker exec lewik_store_db psql` y espera un
 # ciclo del barredor (SweepIntervalSeconds, 10s en Development). Si Postgres no se alcanza por
 # ahí, la sección se omite sola. Con EXPIRY_WAIT se ajusta la espera.
+#
+# ---- Desde 4.7: la sección 21 habla SignalR con curl ---------------------------
+# El contador en vivo se prueba de punta a punta sobre el transporte de long polling, que es
+# HTTP plano: negotiate, handshake, WatchVariant, y leer los frames que empuja el servidor. No
+# hace falta navegador (para mirarlo con los ojos está /signalr-test.html, servido por la API en
+# Development). Lo que exige ese camino es lo que un navegador no puede afirmar: que a la OTRA
+# tienda no le llega nada.
 # =============================================================================
 set -u
 
@@ -148,6 +155,45 @@ guid() {
   local h; h="$(od -An -tx1 -N16 /dev/urandom | tr -d ' \n')"
   printf '%s-%s-4%s-a%s-%s\n' "${h:0:8}" "${h:8:4}" "${h:13:3}" "${h:17:3}" "${h:20:12}"
 }
+
+# ---- helpers SignalR (sección 21) -------------------------------------------
+# El transporte de long polling es HTTP plano, así que el contador en vivo se prueba con curl y
+# no queda como "lo vi andar en el navegador una vez". Y es la única forma de afirmar lo que de
+# verdad importa acá, que es una ausencia: que a la otra tienda NO le llega nada.
+#
+# Secuencia del protocolo: negotiate -> primer GET (abre el transporte) -> POST del handshake ->
+# GET del ack. Los frames van separados por 0x1E, que es lo que traduce el `tr` al leerlos.
+# Imprime el connectionToken urlencodeado, o nada si la conexión fue rechazada.
+hub_open() { # HOST
+  local h="$1" tok id
+  tok=$(curl -s -m 5 -X POST "$API/hubs/store/negotiate?negotiateVersion=1" -H "Host: $h" \
+        | jq -r '.connectionToken // empty' 2>/dev/null)
+  [ -z "$tok" ] && return 1
+  id=$(jq -rn --arg t "$tok" '$t|@uri')
+  curl -s -m 5 -o /dev/null "$API/hubs/store?id=$id" -H "Host: $h"
+  printf '{"protocol":"json","version":1}\x1e' \
+    | curl -s -m 5 -o /dev/null -X POST "$API/hubs/store?id=$id" -H "Host: $h" --data-binary @-
+  curl -s -m 5 -o /dev/null "$API/hubs/store?id=$id" -H "Host: $h"
+  printf '%s' "$id"
+}
+
+# hub_invoke ID HOST MÉTODO ARG -> vuelve recién cuando el hub confirmó la invocación.
+# El invocationId no es decorativo: el POST de un frame devuelve 200 apenas el mensaje entra en
+# la conexión, y el método del hub corre después, en el bucle de la conexión. Sin esperar el
+# completion (type 3), un checkout puede ganarle a la suscripción y la prueba mediría una
+# carrera en vez del comportamiento. Es también la razón de no usar sleeps acá.
+hub_invoke() { # ID HOST TARGET ARG
+  printf '{"type":1,"invocationId":"1","target":"%s","arguments":["%s"]}\x1e' "$3" "$4" \
+    | curl -s -m 5 -o /dev/null -X POST "$API/hubs/store?id=$1" -H "Host: $2" --data-binary @-
+  hub_poll "$1" "$2" 5 | grep -q '"type":3'
+}
+
+# hub_poll ID HOST SEGUNDOS -> los frames recibidos, uno por línea.
+# Lo que ya se emitió mientras no había poll abierto queda encolado en la conexión y sale en el
+# siguiente, así que no hace falta correr el poll en paralelo con la acción que lo dispara: se
+# hace la acción y después se recoge. Si no hay nada, bloquea hasta el timeout y devuelve vacío,
+# que es exactamente el resultado que se quiere medir del lado de la otra tienda.
+hub_poll() { curl -s -m "$3" "$API/hubs/store?id=$1" -H "Host: $2" | tr '\036' '\n'; }
 
 # =============================================================================
 section "0 · Bootstrap: plataforma, tiendas y sesiones"
@@ -1371,7 +1417,6 @@ else
   [ "$(jqr '.reservationExpiresAt')" != "null" ] \
     && ok 20.1d "el invitado ve su plazo en /pay/{token}" \
     || ko 20.1d "sin plazo en la vista del invitado"
-  backdate "$OA"
 
   # --- B. ⭐ un pago parcial apaga el reloj para siempre ---
   st=$(checkout "exp-b-$RUN@test.cl" "$VAR_EXP" 2); OB="$(jqr '.orderId')"
@@ -1379,9 +1424,6 @@ else
   assert_eq 20.2a "pago parcial -> Deposited" "Deposited" "$(jqr '.paymentStatus')"
   req GET "/admin/orders/$OB" >/dev/null
   assert_eq 20.2b "el pago borra el plazo" "null" "$(jqr '.reservationExpiresAt')"
-  # Y aunque se le vuelva a poner un vencimiento pasado a mano, el barredor no lo toca: el filtro
-  # es el estado de pago, no solo que el campo esté vacío.
-  backdate "$OB"
 
   # --- C. iniciar el pago extiende la ventana ---
   # Un pedido recién hecho tiene los 30 minutos completos, más que la gracia de 20: ahí extender no
@@ -1409,12 +1451,17 @@ else
   OD="$(jqr '.orderId')"; assert_status 20.4a "checkout de preventa" 200 "$st"
   req GET "/variants/$VAR_EXPD/preorder" >/dev/null
   assert_eq 20.4b "cupo vendido +3" "$((ESD0+3))" "$(jqr '.soldCount')"
-  backdate "$OD"
 
   # --- una sola espera para los cuatro escenarios ---
   # Snapshot con las tres reservas puestas (A=2, B=2, C=1): así el delta que se mide después es
   # exactamente lo que soltó A, sin depender de lo que haya reservado el resto del script.
   req GET "/variants/$VAR_EXP/stock" >/dev/null; EA1="$(jqr '.available')"; ER1="$(jqr '.reserved')"
+  # Los vencimientos se corren recién ACÁ, después del snapshot y no junto a cada escenario: el
+  # barredor pasa cada 10s y el armado de los cuatro casos son ~15 llamadas, así que un backdate
+  # temprano puede ser barrido ANTES de medir y el delta da cero. Se vio de verdad, con la API
+  # ralentizada a propósito. Puesto acá, la ventana entre el snapshot y el vencimiento es nula.
+  # (B se vence a mano igual: el filtro que lo salva es su estado de pago, no el campo vacío.)
+  backdate "$OA"; backdate "$OB"; backdate "$OD"
   printf "  esperando %ss un ciclo del barredor...\n" "$EXPIRY_WAIT"
   sleep "$EXPIRY_WAIT"
 
@@ -1448,6 +1495,109 @@ else
   st=$(pub POST "/orders/$OA/payments/initiate" '{"gateway":"Transfer","type":"Full"}')
   assert_title 20.9 "initiate sobre un pedido cancelado" 409 "order.cancelled" "$st"
 fi
+
+# =============================================================================
+section "21 · Storefront compuesto y disponibilidad en vivo"
+HOST_A="$SLUG_A.localhost"; HOST_B="$SLUG_B.localhost"
+
+# Productos propios: la sección mide números exactos en el frame que llega, así que no puede
+# compartir variantes con lo que haya reservado o soltado el resto del script.
+st=$(req POST /admin/products "{\"sku\":\"LIVE-$RUN\",\"name\":\"ZZ Live Stock\",\"price\":15000,\"currency\":\"CLP\"}")
+PROD_LIVE="$(jqr '.')"
+st=$(req GET "/products/$PROD_LIVE"); VLIVE="$(jqr '.variants[0].id')"
+req POST "/admin/variants/$VLIVE/stock" '{"quantity":40,"reason":"live section"}' >/dev/null
+st=$(req POST /admin/products "{\"sku\":\"LIVED-$RUN\",\"name\":\"ZZ Live Drop\",\"price\":25000,\"currency\":\"CLP\"}")
+PROD_LIVED="$(jqr '.')"
+st=$(req GET "/products/$PROD_LIVED"); VLIVED="$(jqr '.variants[0].id')"
+req PUT "/admin/variants/$VLIVED/preorder" \
+  '{"capacity":60,"releaseDate":"2026-12-01T00:00:00Z","depositType":"Percentage","depositValue":30}' >/dev/null
+req PUT "/admin/variants/$VLIVE/purchase-limit" '{"maxPerOrder":6}' >/dev/null
+
+# --- 21.1 el read compuesto: catálogo + disponibilidad + topes en UNA llamada ---
+st=$(dom GET /storefront "$HOST_A")
+assert_status 21.1a "GET /storefront por dominio" 200 "$st"
+assert_eq 21.1b "trae la tienda que resolvió el host" "$SLUG_A" "$(jqr '.store.slug')"
+# Lo que hace útil al endpoint no es que responda, sino que NINGUNA variante quede sin
+# disponibilidad: una sola que falte devuelve el front a las N+1 llamadas que esto vino a matar.
+assert_eq 21.1c "toda variante trae disponibilidad" "0" \
+  "$(jqr '[.products[].variants[] | select(.availability == null)] | length')"
+assert_eq 21.1d "el stock se ve como Stock, con su número" "Stock 40" \
+  "$(jqr "[.products[].variants[] | select(.id==\"$VLIVE\")][0] | \"\(.availability.kind) \(.availability.available)\"")"
+# El drop trae además lo que la página de un drop necesita para existir: fecha y abono.
+assert_eq 21.1e "el drop se ve como Preorder con cupo, fecha y abono" "Preorder 60 Percentage 30" \
+  "$(jqr "[.products[].variants[] | select(.id==\"$VLIVED\")][0] | \"\(.availability.kind) \(.availability.available) \(.availability.depositType) \(.availability.depositValue)\"")"
+assert_eq 21.1f "los topes anti-scalping viajan (el front capa el selector)" "6" \
+  "$(jqr "[.products[].variants[] | select(.id==\"$VLIVE\")][0].limit.maxPerOrder")"
+# El aislamiento del read, dicho como una ausencia: mismo backend, otro dominio, no está.
+st=$(dom GET /storefront "$HOST_B")
+assert_eq 21.1g "la variante de A no aparece en la vidriera de B" "0" \
+  "$(jqr "[.products[].variants[] | select(.id==\"$VLIVE\")] | length")"
+# Un host que no es de nadie no es una tienda vacía: es un 404. Con TenantId vacío no hay
+# tienda que coincida, así que falla cerrado en vez de mostrar un catálogo sin dueño.
+st=$(dom GET /storefront "noexiste-$RUN.localhost")
+assert_title 21.1h "host desconocido: 404, no una vidriera vacía" 404 "platform.store_not_found" "$st"
+
+# --- 21.2 el hub también es de una tienda ---
+IDA="$(hub_open "$HOST_A")" || IDA=""
+[ -n "$IDA" ] && ok 21.2a "el hub acepta la conexión por dominio" || ko 21.2a "no se pudo abrir la conexión"
+# Suspendida no atiende tampoco por el hub: hasta 4.7 /hubs estaba en la lista de rutas sin
+# tenant, así que era la única puerta que seguía abierta con la tienda cortada.
+st=$(plat POST "/platform/stores/$TD/suspend" "" "")
+neg=$(curl -s -o "$BODY" -w '%{http_code}' -X POST "$API/hubs/store/negotiate?negotiateVersion=1" -H "Host: smoke-d-$RUN.localhost")
+assert_title 21.2b "tienda suspendida: el hub la rechaza" 403 "platform.store_suspended" "$neg"
+plat POST "/platform/stores/$TD/activate" "" "" >/dev/null
+
+# --- 21.3 ⭐ el número baja solo, y no cruza de tienda ---
+IDB="$(hub_open "$HOST_B")" || IDB=""
+# Las dos conexiones miran EL MISMO variantId. La de B no debería recibir nada, y no porque el
+# id no exista de su lado: el grupo lleva el tenant, así que su suscripción apunta a un grupo
+# al que nadie emite jamás.
+hub_invoke "$IDA" "$HOST_A" WatchVariant "$VLIVE"
+hub_invoke "$IDB" "$HOST_B" WatchVariant "$VLIVE"
+st=$(dom POST /orders "$HOST_A" \
+  "{\"customer\":{\"email\":\"live-$RUN@test.cl\",\"phone\":\"+56911111111\"},\"items\":[{\"productVariantId\":\"$VLIVE\",\"quantity\":3}]}")
+assert_status 21.3a "checkout sobre la variante mirada" 200 "$st"
+FRAME="$(hub_poll "$IDA" "$HOST_A" 10 | grep availabilityChanged | head -1)"
+assert_eq 21.3b "⭐ el frame llega solo, sin que nadie pregunte" "Stock 37 true" \
+  "$(printf '%s' "$FRAME" | jq -r '.arguments[0] | "\(.kind) \(.available) \(.isSellable)"' 2>/dev/null)"
+# La ausencia se mide con el mismo evento ya entregado del otro lado: si acá llega algo, el
+# aislamiento por grupo no existe.
+OTHER="$(hub_poll "$IDB" "$HOST_B" 5)"
+[ -z "$OTHER" ] && ok 21.3c "⭐ a la otra tienda no le llega nada" \
+  || ko 21.3c "fuga entre tiendas: $(printf '%s' "$OTHER" | head -c 120)"
+
+# --- 21.4 ⭐ el caso estrella: el cupo de un drop en vivo ---
+# Es lo que 4.7 vino a arreglar. Preorder era una Entity y no levantaba eventos, así que durante
+# un drop —el único momento donde un contador en vivo importa— no se movía nada.
+hub_invoke "$IDA" "$HOST_A" WatchVariant "$VLIVED"
+st=$(dom POST /orders "$HOST_A" \
+  "{\"customer\":{\"email\":\"live-drop-$RUN@test.cl\",\"phone\":\"+56922222222\"},\"items\":[{\"productVariantId\":\"$VLIVED\",\"quantity\":4}]}")
+ODROP="$(jqr '.orderId')"
+assert_status 21.4a "checkout del drop" 200 "$st"
+FRAME="$(hub_poll "$IDA" "$HOST_A" 10 | grep availabilityChanged | head -1)"
+assert_eq 21.4b "⭐ el cupo baja en vivo" "Preorder 56 true" \
+  "$(printf '%s' "$FRAME" | jq -r '.arguments[0] | "\(.kind) \(.available) \(.isSellable)"' 2>/dev/null)"
+
+# --- 21.5 y sube solo cuando el cupo vuelve ---
+# El mismo camino que recorre una reserva vencida de 4.6: nadie mira la pantalla, el cupo vuelve.
+req POST "/admin/orders/$ODROP/cancel" >/dev/null
+FRAME="$(hub_poll "$IDA" "$HOST_A" 10 | grep availabilityChanged | head -1)"
+assert_eq 21.5 "⭐ cancelar devuelve el cupo y el contador sube" "Preorder 60 true" \
+  "$(printf '%s' "$FRAME" | jq -r '.arguments[0] | "\(.kind) \(.available) \(.isSellable)"' 2>/dev/null)"
+
+# --- 21.6 lo que no se mira, no se manda ---
+# Sin esto, "llegó un frame" no probaría que hay filtrado: podría estar emitiendo a todo el
+# mundo. Un solo pedido mueve LAS DOS variantes, con una sola dada de baja, así que la prueba
+# es una comparación dentro del mismo poll y no depende de tiempos.
+hub_invoke "$IDA" "$HOST_A" UnwatchVariant "$VLIVED"
+st=$(dom POST /orders "$HOST_A" \
+  "{\"customer\":{\"email\":\"live-mix-$RUN@test.cl\",\"phone\":\"+56933333333\"},\"items\":[{\"productVariantId\":\"$VLIVE\",\"quantity\":1},{\"productVariantId\":\"$VLIVED\",\"quantity\":1}]}")
+assert_status 21.6a "un pedido que mueve las dos variantes" 200 "$st"
+FRAMES="$(hub_poll "$IDA" "$HOST_A" 10)"
+assert_eq 21.6b "sigue llegando lo suscrito" "1" \
+  "$(printf '%s' "$FRAMES" | grep -c "$VLIVE\"" || true)"
+assert_eq 21.6c "y nada de lo que se dio de baja" "0" \
+  "$(printf '%s' "$FRAMES" | grep -c "$VLIVED\"" || true)"
 
 # =============================================================================
 section "RESUMEN"

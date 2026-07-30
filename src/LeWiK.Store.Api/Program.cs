@@ -6,6 +6,7 @@ using LeWiK.Store.Api.Orders;
 using LeWiK.Store.Api.Payments;
 using LeWiK.Store.Api.Platform;
 using LeWiK.Store.Api.Preorders;
+using LeWiK.Store.Api.Storefront;
 using LeWiK.Store.App.Platform;
 using LeWiK.Store.App.Platform.Domain;
 using LeWiK.Store.App.Common;
@@ -31,7 +32,11 @@ builder.Services.AddCors(options =>
         .AllowCredentials());
 });
 
-builder.Services.AddStoreApp(builder.Configuration.GetConnectionString("Default")!, redisConnection, builder.Configuration);
+// The Api assembly goes in as a handler assembly: the SignalR broadcasters are INotificationHandlers
+// and SignalR belongs to the host, not to App. One AddMediatR call, so the behavior order lives in
+// exactly one place — see AddStoreApp.
+builder.Services.AddStoreApp(builder.Configuration.GetConnectionString("Default")!, redisConnection,
+    builder.Configuration, typeof(LeWiK.Store.Api.Realtime.StoreHub).Assembly);
 builder.Services.AddStoreAuth();
 builder.Services.AddExceptionHandler<LeWiK.Store.Api.Common.GlobalExceptionHandler>();
 builder.Services.AddHostedService<LeWiK.Store.Api.Workers.ReservationExpiryWorker>();
@@ -87,6 +92,13 @@ if (!string.IsNullOrWhiteSpace(seedEmail) && !string.IsNullOrWhiteSpace(seedPass
 app.UseExceptionHandler();
 app.UseCors("Frontend");
 
+// signalr-test.html (4.7) is served by the API itself so it is same-origin: opened from disk it
+// would be origin "null" and CORS — an explicit allow-list, because AllowCredentials forbids a
+// wildcard — would block the hub's negotiate before anything could be seen. Served from here,
+// http://<slug>.localhost:5223/signalr-test.html also picks its tenant from the URL, which is
+// what makes the isolation check a matter of typing a different hostname.
+if (app.Environment.IsDevelopment()) app.UseStaticFiles();
+
 //Middlewares
 app.UseMiddleware<LeWiK.Store.Api.Tenancy.TenantResolutionMiddleware>();
 
@@ -116,6 +128,7 @@ app.MapPaymentLinkEndpoints();
 app.MapPlatformEndpoints();
 app.MapAuthEndpoints();
 app.MapCustomerAuthEndpoints();
+app.MapStorefrontEndpoints();
 
 // TEMPORARY smoke endpoint — remove once entitlement is enforced for real
 app.MapGet("/health/entitlement", async (ITenantContext tenant, IBackOfficeClient backOffice) =>

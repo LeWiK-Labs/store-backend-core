@@ -1,0 +1,60 @@
+info:
+  name: Get Storefront
+  type: http
+  seq: 1
+http:
+  method: GET
+  url: "{{baseUrl}}/storefront"
+  auth: inherit
+runtime:
+  scripts:
+    - type: tests
+      code: |-
+        test("returns 200", function() { expect(res.status).to.equal(200); });
+        test("toda variante trae disponibilidad", function() {
+          const sinDisponibilidad = (res.body.products || [])
+            .flatMap(p => p.variants)
+            .filter(v => !v.availability);
+          expect(sinDisponibilidad).to.have.lengthOf(0);
+        });
+        // Deja a mano una variante mirable en /signalr-test.html.
+        if (res.status === 200) {
+          const v = (res.body.products || []).flatMap(p => p.variants)[0];
+          if (v) { bru.setEnvVar("variantId", v.id); }
+        }
+settings:
+  encodeUrl: true
+docs: |-
+  # Get Storefront
+  Todo lo que la vidriera necesita para pintarse, en una llamada: la tienda, el
+  catálogo activo, la disponibilidad de cada variante y los topes de compra.
+
+  Público y sin sesión. La tienda sale del **dominio** de la request, así que en
+  producción esta llamada no lleva ningún header: es literalmente lo que pide el
+  navegador de un comprador.
+
+  ## `availability`: una sola forma para las dos maneras de vender
+  ```
+  { kind: "Stock",    available: 40, isSellable: true }
+  { kind: "Preorder", available: 56, isSellable: true,
+    releaseDate: "...", depositType: "Percentage", depositValue: 30 }
+  ```
+  Una variante con preventa **activa** vende contra cupo; si no, vende del stock.
+  Es el mismo orden de precedencia que usa el checkout, y a propósito: la página
+  no puede ofrecer lo que el checkout va a rechazar. Una variante sin ninguno de
+  los dos se lee como `Stock 0`, que es lo que significa `order.no_stock`.
+
+  ## `limit`
+  Viene a nivel de producto y de variante, para que el front pueda capar el
+  selector de cantidad en vez de dejar que el comprador descubra el tope con un
+  409. **Ojo:** esto publica la política anti-scalping, que
+  `/admin/products/{id}/purchase-limit` mantiene a propósito detrás del panel —
+  leerla le dice a un revendedor exactamente bajo qué quedarse. `maxPerOrder` se
+  descubre igual pidiendo de más; `maxPerCustomer` y `windowDays` son los que
+  regalan la política.
+
+  ## Respuestas
+  - **200** — `{ store: { name, slug }, products: [...] }`
+  - **404** `platform.store_not_found` — el host no resuelve ninguna tienda. Falla
+    cerrado a propósito: una vidriera vacía se leería como una tienda sin nada que
+    vender, y es otra cosa.

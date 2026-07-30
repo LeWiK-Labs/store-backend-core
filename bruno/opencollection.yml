@@ -60,6 +60,13 @@ docs: |-
   colección puede aparecer `Cancelled` sin que nadie lo haya tocado. Cualquier pago,
   aunque sea menor al abono, apaga ese reloj para siempre.
 
+  ## La vidriera y el contador en vivo (4.7)
+  `GET /storefront` devuelve catálogo + disponibilidad + topes en una sola llamada
+  (ver la carpeta **Storefront**), y esos números se mueven solos por SignalR. El hub
+  no se puede probar desde Bruno; para verlo, la API sirve `/signalr-test.html` en
+  Development. Los grupos llevan el tenant, que se resuelve del host al conectar, así
+  que una tienda nunca recibe las novedades de otra.
+
   Todo lo que cambia estado bajo `/admin` o `/platform` necesita además el header
   `X-Requested-With: LeWiKPanel` (capa extra sobre SameSite=Lax y CORS estricto).
   Las requests de esta colección ya lo llevan.

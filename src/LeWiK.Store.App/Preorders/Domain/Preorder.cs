@@ -7,7 +7,11 @@ namespace LeWiK.Store.App.Preorders.Domain;
 public enum DepositType { None, Percentage, FixedPerUnit }
 public enum PreorderStatus { Active, Closed }
 
-public sealed class Preorder : Entity, ITenantScoped, IAuditable
+// An aggregate since 4.7, and only for the event: what falls in front of a buyer during a drop
+// is the remaining capacity, not the stock. InventoryItem was promoted in 2.4.1 for the same
+// reason and Preorder stayed an Entity, which left the live counter blind in the one case it
+// exists for.
+public sealed class Preorder : AggregateRoot, ITenantScoped, IAuditable
 {
     public Guid TenantId { get; private init; }
     public Guid ProductVariantId { get; private init; }
@@ -36,6 +40,10 @@ public sealed class Preorder : Entity, ITenantScoped, IAuditable
         DepositType = depositType;
         DepositValue = depositValue;
         Status = PreorderStatus.Active;
+        // Beyond the spec: opening a drop flips how the variant sells, from stock to capacity.
+        // Anyone already watching that variant would otherwise keep showing its stock number
+        // with no event ever coming to correct it.
+        RaiseCapacityChanged();
     }
 
     // Admin edits an existing drop. Can't drop capacity below what's already sold.
@@ -47,6 +55,7 @@ public sealed class Preorder : Entity, ITenantScoped, IAuditable
         ReleaseDate = releaseDate;
         DepositType = depositType;
         DepositValue = depositValue;
+        RaiseCapacityChanged();
         return Result.Success();
     }
 
@@ -59,6 +68,7 @@ public sealed class Preorder : Entity, ITenantScoped, IAuditable
         if (qty > AvailableCapacity)
             return PreorderErrors.CapacityExceeded(qty, AvailableCapacity);
         SoldCount += qty;
+        RaiseCapacityChanged();
         return Result.Success();
     }
 
@@ -67,9 +77,19 @@ public sealed class Preorder : Entity, ITenantScoped, IAuditable
     {
         RequirePositive(qty);
         SoldCount = Math.Max(0, SoldCount - qty);
+        RaiseCapacityChanged();
     }
 
-    public void Close() => Status = PreorderStatus.Closed;
+    public void Close()
+    {
+        Status = PreorderStatus.Closed;
+        RaiseCapacityChanged();
+    }
+
+    // One place, so the four callers cannot disagree about what the event says — in particular
+    // that a closed drop is not sellable however much capacity is left on paper.
+    private void RaiseCapacityChanged() => Raise(new PreorderCapacityChanged(
+        TenantId, ProductVariantId, Capacity, SoldCount, Status == PreorderStatus.Active));
 
     // Deposit (abono) due for qty units at unitPrice. None → full amount (pay in full).
     public Money CalculateDeposit(Money unitPrice, int qty)

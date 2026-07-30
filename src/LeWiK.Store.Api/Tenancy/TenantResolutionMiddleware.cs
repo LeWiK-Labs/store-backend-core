@@ -16,10 +16,11 @@ public sealed class TenantResolutionMiddleware(
     // (gateway callbacks and guest payment links carry it in a token or the path).
     // "/health" is deliberately NOT here: /health/tenant exists precisely to report what
     // this middleware resolved, and skipping it would make it always answer "no tenant".
-    // "/hubs" comes off this list the day the hub broadcasts per store.
+    // "/hubs" came off this list in 4.7: the hub broadcasts per store now, so its connections
+    // have to be resolved and suspension-checked like any other request.
     private static readonly string[] TenantlessPaths =
     [
-        "/platform", "/hubs", "/pay/", "/auth/platform",
+        "/platform", "/pay/", "/auth/platform",
         "/payments/webpay/return", "/payments/mercadopago/webhook"
     ];
 

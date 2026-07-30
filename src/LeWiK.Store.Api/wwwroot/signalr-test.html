@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <title>Drop en vivo — LeWiK</title>
+  <script src="https://cdn.jsdelivr.net/npm/@microsoft/signalr@8/dist/browser/signalr.min.js"></script>
+</head>
+<body style="font-family: system-ui; padding: 2rem; max-width: 46rem">
+  <h2>Cupo en vivo</h2>
+
+  <!--
+    Servida por la propia API (wwwroot, solo en Development) y no desde el disco: abierta como
+    file:// el origen es "null" y el CORS de la API es una lista explícita — AllowCredentials no
+    admite comodín —, así que el negotiate del hub se bloquearía antes de ver nada.
+
+    Como se sirve desde acá, la tienda sale del host de la URL, igual que en producción:
+      http://<slug>.localhost:5223/signalr-test.html
+    Abrir dos pestañas con dos slugs distintos y mirar el MISMO variantId es la prueba de
+    aislamiento: el grupo lleva el tenant, así que a la otra tienda no le llega nada.
+  -->
+
+  <p>Tienda: <b id="store">—</b></p>
+  <label>variantId <input id="variantId" placeholder="GUID de la variante" size="40"></label>
+  <button id="watch">Mirar</button>
+  <p>Estado: <b id="status">desconectado</b></p>
+  <p style="font-size:3rem; margin:.5rem 0" id="available">—</p>
+  <p id="kind" style="color:#666"></p>
+  <pre id="log" style="background:#f4f4f4; padding:1rem; max-height:16rem; overflow:auto"></pre>
+
+<script>
+const $ = id => document.getElementById(id);
+const log = m => $("log").textContent = m + "\n" + $("log").textContent;
+
+const conn = new signalR.HubConnectionBuilder()
+  .withUrl("/hubs/store")          // relativo: misma tienda que la URL de esta página
+  .withAutomaticReconnect()
+  .build();
+
+conn.on("availabilityChanged", u => {
+  render(u);
+  log(JSON.stringify(u));
+});
+
+function render(u) {
+  $("available").textContent = u.available;
+  $("kind").textContent = `${u.kind} · ${u.isSellable ? "vendible" : "sin disponibilidad"}`;
+}
+
+conn.start()
+  .then(() => $("status").textContent = "conectado")
+  .catch(e => { $("status").textContent = "rechazado"; log(String(e)); });
+
+$("watch").onclick = async () => {
+  const id = $("variantId").value.trim();
+  await conn.invoke("WatchVariant", id);
+  log("suscrito a " + id);
+
+  // Primero suscribir, DESPUÉS leer: al revés, un checkout que entre entre la lectura y la
+  // suscripción se pierde y el número queda viejo para siempre. En este orden, lo peor que
+  // pasa es pintar dos veces el mismo valor.
+  const r = await fetch("/storefront");
+  if (!r.ok) return log("no se pudo leer /storefront: " + r.status);
+  const sf = await r.json();
+  $("store").textContent = sf.store.name;
+  for (const p of sf.products)
+    for (const v of p.variants)
+      if (v.id === id) render(v.availability);
+};
+</script>
+</body>
+</html>
