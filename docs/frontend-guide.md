@@ -884,7 +884,51 @@ job que vence reservas para abortar si el pedido se pagó mientras tanto) y
 
 ---
 
-## 17 · Herramientas para probar
+## 17 · Datos para los E2E
+
+```bash
+./scripts/seed-e2e.sh
+```
+
+Deja la base con un dataset **determinista** y escribe el manifiesto en
+`scripts/e2e-seed.json` con todos los ids. Correrlo de nuevo borra lo anterior y reconstruye lo
+mismo, así que un test puede afirmar "quedan 98 cupos" sin cuidar el orden ni limpiar después.
+Los slugs, SKUs, emails y contraseñas son fijos; **los GUIDs no**, por eso el manifiesto: la
+suite lo importa en vez de tener ids escritos a mano.
+
+Sembrar requiere sesión de plataforma y de staff, pero **lo sembrado se consume sin autenticarse**
+— la vidriera, el checkout, el pago y el contador en vivo son todos anónimos.
+
+### Qué queda sembrado
+
+| Fixture | Para probar |
+|---|---|
+| `variants.inStock` (`E2E-BOX`) | compra feliz desde stock |
+| `variants.outOfStock` (`E2E-AGOTADO`) | `isSellable: false`. Está **vendido**, no inexistente: tiene fila de inventario, así que un checkout da `inventory.insufficient_stock` y no `order.no_stock` |
+| `variants.limited` (`E2E-LIMITADO`) | `maxPerOrder: 2` visible + tope por cliente **oculto** de 3/30d → el 409 que el selector no puede anticipar |
+| `variants.drop` (`E2E-DROP`) | página de drop, abono 30%, contador en vivo |
+| `variants.dropAlmostGone` | queda **1** cupo: ver el contador llegar a cero y el `preorder.capacity_exceeded` del siguiente |
+| `variants.dropClosed` | variante que **fue** drop, se liberó y se cerró: hoy vende por stock |
+| `productWithOptions` | 2 ejes × 4 combinaciones, una sin stock: selector con opción no vendible |
+| `variants.otherStore` | pertenece a `e2e-otra`: usar ese id contra `e2e` debe dar 404 |
+| `stores.suspended` | todo 403 `platform.store_suspended` salvo `/auth/staff` y `/health` |
+| `orders.*` | un pedido por estado: `pendingPayment` (con token y reloj corriendo), `awaitingRelease`, `paid`, `delivered`, `cancelled`, `withPaymentLink` |
+| `orders.customerHistory` | compra hecha **como invitado** que quedó dentro de la cuenta al registrarse |
+| `users.customer` | cliente con contraseña e historial · `users.owner` y `users.staff` para probar el recorte por rol |
+
+La pasarela **Transfer ya está configurada**, así que `initiate` responde 200 sin que nadie toque
+el panel.
+
+> **El pedido `pendingPayment` se cancela solo a los 30 minutos** (`Reservations:TtlMinutes`). Si
+> la suite lo necesita vivo, correr el seed antes de la tanda. Es la misma razón por la que el
+> seed es barato de repetir.
+
+> Si borrás tiendas a mano en la base, **acordate de limpiar la caché del resolver**:
+> `docker exec lewik_store_redis redis-cli --scan --pattern 'tenant:host:*' | xargs redis-cli DEL`.
+> Sin eso el host sigue resolviendo a un tenant que ya no existe y todo contesta
+> `platform.store_not_found`, que es un síntoma bastante desconcertante. El seed ya lo hace.
+
+## 18 · Otras herramientas
 
 - **Bruno** (`bruno/`) — 44 requests documentadas. Orden de arranque: *Auth > Platform Login* →
   *Platform > Create Store* → *Auth > Staff Login*, y recién ahí responde el resto.

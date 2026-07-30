@@ -480,3 +480,6 @@ $RECYCLE.BIN/
 
 # Vim temporary swap files
 *.swp
+
+# Manifiesto del seed de E2E: se regenera en cada corrida de scripts/seed-e2e.sh
+scripts/e2e-seed.json
