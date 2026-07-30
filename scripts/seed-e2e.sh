@@ -120,16 +120,21 @@ fi
 
 # =============================================================================
 step "Tiendas"
-mkstore() { # slug nombre email -> id
+# Igual que checkout(): resultado en una global, no por stdout. Llamar a estos helpers dentro de
+# $( ) los corre en un subshell, y ahí `die` solo mata el subshell — el script seguiría de largo
+# con un id vacío y reventaría cinco pasos después con un 404 que no explica nada. Pasó: con
+# --no-reset, mkstore moría por platform.slug_taken y la corrida continuaba igual.
+LAST_STORE=""
+mkstore() { # slug nombre email
   local st
   st=$(plat POST /platform/stores \
     "{\"name\":\"$2\",\"slug\":\"$1\",\"ownerEmail\":\"$3\",\"ownerName\":\"Owner E2E\",\"ownerPassword\":\"$PASS\"}")
-  [ "$st" = "200" ] || die "No se pudo crear la tienda '$1' — $(j '.title // empty') (HTTP $st)"
-  j '.id'
+  [ "$st" = "200" ] || die "No se pudo crear la tienda '$1' — $(j '.title // empty') (HTTP $st). Con --no-reset esto pasa si ya la sembraste: corré sin la opción."
+  LAST_STORE="$(j '.id')"
 }
-T=$(mkstore  "$SLUG"      "Tienda E2E"        "$OWNER")
-TB=$(mkstore "$SLUG_B"    "Tienda E2E Otra"   "owner@e2e-otra.test")
-TS=$(mkstore "$SLUG_SUSP" "Tienda Suspendida" "owner@e2e-susp.test")
+mkstore "$SLUG"      "Tienda E2E"        "$OWNER";                T="$LAST_STORE"
+mkstore "$SLUG_B"    "Tienda E2E Otra"   "owner@e2e-otra.test";   TB="$LAST_STORE"
+mkstore "$SLUG_SUSP" "Tienda Suspendida" "owner@e2e-susp.test";   TS="$LAST_STORE"
 
 st=$(call POST /auth/staff/login "$SLUG.localhost"      "{\"email\":\"$OWNER\",\"password\":\"$PASS\"}" "$JA")
 need "$st" 200 "login del owner de $SLUG"
@@ -147,17 +152,21 @@ adm PUT /admin/payment-methods/Transfer \
 
 # =============================================================================
 step "Catálogo"
-mkproduct() { # sku nombre precio -> "productId variantId"
-  adm POST /admin/products "{\"sku\":\"$1\",\"name\":\"$2\",\"price\":$3,\"currency\":\"CLP\"}" >/dev/null
-  local pid; pid="$(j '.')"
-  adm GET "/products/$pid" >/dev/null
-  printf '%s %s\n' "$pid" "$(j '.variants[0].id')"
+LAST_PRODUCT=""; LAST_VARIANT=""
+mkproduct() { # sku nombre precio
+  local st
+  st=$(adm POST /admin/products "{\"sku\":\"$1\",\"name\":\"$2\",\"price\":$3,\"currency\":\"CLP\"}")
+  [ "$st" = "200" ] || die "No se pudo crear el producto '$1' — $(j '.title // empty') (HTTP $st)"
+  LAST_PRODUCT="$(j '.')"
+  adm GET "/products/$LAST_PRODUCT" >/dev/null
+  LAST_VARIANT="$(j '.variants[0].id')"
+  [ -n "$LAST_VARIANT" ] && [ "$LAST_VARIANT" != "null" ] || die "El producto '$1' quedó sin variante"
 }
 addstock() { adm POST "/admin/variants/$1/stock" "{\"quantity\":$2,\"reason\":\"seed e2e\"}" >/dev/null; }
 
-read -r P_BOX  V_BOX  <<< "$(mkproduct E2E-BOX      'Booster Box Scarlet & Violet' 89990)"
-read -r P_OUT  V_OUT  <<< "$(mkproduct E2E-AGOTADO  'Elite Trainer Box (agotada)'  54990)"
-read -r P_LIM  V_LIM  <<< "$(mkproduct E2E-LIMITADO 'Alt Art Charizard'           129990)"
+mkproduct E2E-BOX      'Booster Box Scarlet & Violet' 89990; P_BOX="$LAST_PRODUCT"; V_BOX="$LAST_VARIANT"
+mkproduct E2E-AGOTADO  'Elite Trainer Box (agotada)'  54990; P_OUT="$LAST_PRODUCT"; V_OUT="$LAST_VARIANT"
+mkproduct E2E-LIMITADO 'Alt Art Charizard'           129990; P_LIM="$LAST_PRODUCT"; V_LIM="$LAST_VARIANT"
 addstock "$V_BOX" 50
 addstock "$V_LIM" 100
 # E2E-AGOTADO se agota de verdad: se cargan 2 unidades y alguien se las lleva. Queda con
@@ -203,12 +212,12 @@ step "Preventas"
 mkdrop() { adm PUT "/admin/variants/$1/preorder" \
   "{\"capacity\":$2,\"releaseDate\":\"$3\",\"depositType\":\"Percentage\",\"depositValue\":$4}" >/dev/null; }
 
-read -r P_DROP P_DROP_V <<< "$(mkproduct E2E-DROP 'Drop: Colección 151 sellada' 149990)"
+mkproduct E2E-DROP 'Drop: Colección 151 sellada' 149990; P_DROP="$LAST_PRODUCT"; P_DROP_V="$LAST_VARIANT"
 mkdrop "$P_DROP_V" 100 "2026-12-01T00:00:00Z" 30
 
 # Drop casi agotado: queda 1 cupo. Sirve para ver el contador llegar a cero en vivo y el
 # 409 preorder.capacity_exceeded del siguiente comprador.
-read -r P_CASI P_CASI_V <<< "$(mkproduct E2E-DROP-CASI 'Drop: última caja' 199990)"
+mkproduct E2E-DROP-CASI 'Drop: última caja' 199990; P_CASI="$LAST_PRODUCT"; P_CASI_V="$LAST_VARIANT"
 mkdrop "$P_CASI_V" 5 "2026-11-01T00:00:00Z" 50
 anon POST /orders "$SLUG.localhost" \
   "{\"customer\":{\"email\":\"otro@e2e.test\",\"phone\":\"+56911111111\"},\"items\":[{\"productVariantId\":\"$P_CASI_V\",\"quantity\":4}]}" >/dev/null
@@ -216,7 +225,7 @@ anon POST /orders "$SLUG.localhost" \
 # Drop ya cerrado, con el ciclo completo recorrido: vendido, pagado, mercadería cargada,
 # liberado y cerrado. La variante volvió a venderse por stock — el estado en que queda una
 # preventa después del evento.
-read -r P_CERR P_CERR_V <<< "$(mkproduct E2E-DROP-CERRADO 'Drop cerrado: Obsidian Flames' 79990)"
+mkproduct E2E-DROP-CERRADO 'Drop cerrado: Obsidian Flames' 79990; P_CERR="$LAST_PRODUCT"; P_CERR_V="$LAST_VARIANT"
 mkdrop "$P_CERR_V" 10 "2026-06-01T00:00:00Z" 30
 anon POST /orders "$SLUG.localhost" \
   "{\"customer\":{\"email\":\"early@e2e.test\",\"phone\":\"+56911111111\"},\"items\":[{\"productVariantId\":\"$P_CERR_V\",\"quantity\":2}]}" >/dev/null

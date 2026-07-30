@@ -928,6 +928,38 @@ el panel.
 > Sin eso el host sigue resolviendo a un tenant que ya no existe y todo contesta
 > `platform.store_not_found`, que es un síntoma bastante desconcertante. El seed ya lo hace.
 
+### Correrlo en CI — todavía no se puede tal cual
+
+El reset borra por `docker exec lewik_store_db psql`, porque **no hay endpoint que borre tiendas
+y no debería haberlo**. En un runner donde la API es un servicio remoto ese `docker exec` no
+existe, así que el script funciona en una máquina de desarrollo y no en un pipeline.
+
+Tres salidas, sin decidir todavía:
+
+| Opción | Qué implica |
+|---|---|
+| **Base efímera por corrida** | Levantar Postgres+Redis desde cero en el job y usar `--no-reset`. No hay nada que borrar. Es lo más limpio y probablemente lo que quieran |
+| **Endpoint de reset gateado por entorno** | Un `POST /platform/test-reset` que solo exista fuera de producción. Rápido, pero agrega superficie destructiva al backend y hay que gatearla con el mismo cuidado que `Tenancy:AllowHeaderOverride` |
+| **Correr el seed desde el runner con acceso a la base** | Sirve si el pipeline levanta los contenedores igual. Es la opción de hoy, sin cambios |
+
+`--no-reset` ya existe y siembra sin borrar (falla si los slugs ya están tomados), así que la
+primera opción funciona hoy sin tocar nada del backend. Cuando definan el pipeline lo cerramos.
+
+### Si tu tooling de E2E invoca `curl` desde bash
+
+En Git Bash sobre Windows, **`curl -d` corrompe los argumentos con caracteres no ASCII**: mandar
+`"Colección"` en el nombre de un producto devuelve `400 request.invalid_body`, y los mismos bytes
+por `--data-binary @-` devuelven 200. Se transcodifica el argumento antes de que curl lo vea; no
+es el backend. Los cuerpos van por stdin:
+
+```bash
+printf '%s' "$json" | curl ... -H "Content-Type: application/json" --data-binary @-
+```
+
+No aplica si la suite usa `fetch` desde Node o un runner tipo Playwright/Cypress, que mandan los
+bytes directo. Sí aplica a cualquier prueba manual con curl, y un catálogo chileno tiene acentos
+por definición.
+
 ## 18 · Otras herramientas
 
 - **Bruno** (`bruno/`) — 44 requests documentadas. Orden de arranque: *Auth > Platform Login* →
