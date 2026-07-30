@@ -5,6 +5,7 @@ using LeWiK.Store.App.Common.Persistence;
 using LeWiK.Store.App.Common.Results;
 using LeWiK.Store.App.Common.Security;
 using LeWiK.Store.App.Common.Tenancy;
+using LeWiK.Store.App.Customers;
 using LeWiK.Store.App.Customers.Domain;
 using LeWiK.Store.App.Inventory.Domain;
 using LeWiK.Store.App.Orders.Domain;
@@ -14,9 +15,13 @@ using Microsoft.EntityFrameworkCore;
 
 namespace LeWiK.Store.App.Orders;
 
+// Customer is optional because a logged-in buyer already has one on file. AuthenticatedCustomerId
+// is filled by the endpoint from the session claims and is NOT part of the request body: if a
+// caller could name a customer id, checkout would become a way to order on someone else's behalf.
 public sealed record CheckoutCommand(
-    CustomerInfo Customer,
-    IReadOnlyList<CheckoutItem> Items) : ICommand<CheckoutResponse>;
+    CustomerInfo? Customer,
+    IReadOnlyList<CheckoutItem> Items,
+    Guid? AuthenticatedCustomerId = null) : ICommand<CheckoutResponse>;
 
 // The token is the guest's only handle on this order. Once order details stopped being
 // readable by bare id — a GUID in a URL was enough to read a stranger's personal data — a
@@ -30,9 +35,21 @@ public sealed class CheckoutValidator : AbstractValidator<CheckoutCommand>
 {
     public CheckoutValidator()
     {
-        RuleFor(x => x.Customer.Email).NotEmpty().EmailAddress().MaximumLength(320);
-        RuleFor(x => x.Customer.Phone).NotEmpty().MaximumLength(30);
-        RuleFor(x => x.Customer.Name).MaximumLength(200);
+        // Contact details are only required from a guest. A signed-in buyer already gave them,
+        // and demanding them again would make having an account worse than not having one.
+        When(x => x.AuthenticatedCustomerId is null, () =>
+        {
+            RuleFor(x => x.Customer).NotNull();
+            // Nested, not flat: FluentValidation runs every RuleFor in a When block, so a flat
+            // list would dereference Customer.Email on the null it just rejected — turning a
+            // guest checkout with no contact details into a 500 instead of a 400.
+            When(x => x.Customer is not null, () =>
+            {
+                RuleFor(x => x.Customer!.Email).NotEmpty().EmailAddress().MaximumLength(320);
+                RuleFor(x => x.Customer!.Phone).NotEmpty().MaximumLength(30);
+                RuleFor(x => x.Customer!.Name).MaximumLength(200);
+            });
+        });
         RuleFor(x => x.Items).NotEmpty();
         RuleForEach(x => x.Items).ChildRules(i =>
         {
@@ -53,17 +70,41 @@ public sealed class CheckoutHandler(StoreDbContext db, ITenantContext tenant, Pu
             .Select(g => (VariantId: g.Key, Quantity: g.Sum(x => x.Quantity)))
             .ToList();
 
-        // Resolve the customer: get-or-create a guest by email within the tenant.
-        var customer = await db.Set<Customer>()
-            .FirstOrDefaultAsync(c => c.Email == request.Customer.Email, ct);
-        if (customer is null)
+        // Resolve the customer: the session's account when there is one, otherwise
+        // get-or-create a guest by email within the tenant.
+        Customer customer;
+        if (request.AuthenticatedCustomerId is { } customerId)
         {
-            customer = Customer.Guest(tenant.TenantId, request.Customer.Email, request.Customer.Phone, request.Customer.Name);
-            db.Add(customer);
+            // Attach the order to their account. Looked up under the normal tenant filter, so a
+            // session whose customer belongs to another store finds nothing here even if the
+            // policy were ever loosened.
+            var account = await db.Set<Customer>().FirstOrDefaultAsync(c => c.Id == customerId, ct);
+            if (account is null) return CustomerErrors.NotFound();
+            customer = account;
+
+            // Contact details are optional now, but a buyer may still correct them at checkout.
+            if (request.Customer is not null)
+                customer.UpdateContact(request.Customer.Phone, request.Customer.Name ?? customer.Name);
         }
         else
         {
-            customer.UpdateContact(request.Customer.Phone, request.Customer.Name);
+            // Lowercased to match the entity, which normalises on construction. The unique
+            // index is (TenantId, Email) and Postgres compares case-sensitively, so without
+            // this "Juan@x.cl" would not find the guest created as "juan@x.cl" — and the same
+            // person would end up with two customer rows, two histories, and two independent
+            // anti-scalping counters.
+            var email = request.Customer!.Email.ToLowerInvariant();
+            var existing = await db.Set<Customer>().FirstOrDefaultAsync(c => c.Email == email, ct);
+            if (existing is null)
+            {
+                customer = Customer.Guest(tenant.TenantId, email, request.Customer.Phone, request.Customer.Name);
+                db.Add(customer);
+            }
+            else
+            {
+                existing.UpdateContact(request.Customer.Phone, request.Customer.Name ?? existing.Name);
+                customer = existing;
+            }
         }
 
         var drafts = new List<OrderLineDraft>();

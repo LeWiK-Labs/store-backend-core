@@ -1,4 +1,5 @@
 using LeWiK.Store.App.Platform;
+using LeWiK.Store.App.Common.Security;
 using LeWiK.Store.App.Platform.Domain;
 // Every namespace here nests under LeWiK, which already has a member namespace called Store,
 // and enclosing-namespace members beat compilation-unit aliases in name lookup — so even

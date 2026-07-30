@@ -1156,6 +1156,166 @@ st=$(curl -s -o "$BODY" -w '%{http_code}' "$API/health/tenant" \
 assert_eq 18.8 "en dev el header le gana al dominio" "$TA" "$(jqr '.tenantId')"
 
 # =============================================================================
+# La tercera población: el comprador. Todo por dominio (`dom`), porque el storefront es
+# justamente lo que vive en un dominio y no manda headers de tenant.
+#
+# OJO: los tarros de cookies quedan atados al Host que mandamos, así que un token de una
+# población no llega solo a otra — hay que repetirlo a mano para probar que el servidor lo
+# rechaza, y no que el cliente no lo mandó.
+section "19 · Compradores: invitado y con cuenta"
+CH="$SLUG_A.localhost"                      # el storefront de la tienda A
+JAR_C="$BODY.jar.cust"; JAR_C2="$BODY.jar.cust2"; JAR_C3="$BODY.jar.cust3"
+touch "$JAR_C" "$JAR_C2" "$JAR_C3"
+CEMAIL="juan-$RUN@test.cl"; CPASS="micontrasena123"
+
+# Un producto propio de esta sección, para no chocar con los límites que ya dejaron puestos
+# las secciones 6 y 18 sobre PROD_SIMPLE.
+st=$(req POST /admin/products "{\"sku\":\"CUST-$RUN\",\"name\":\"Deck Box\",\"price\":9990,\"currency\":\"CLP\"}")
+PROD_CUST="$(jqr '.')"
+st=$(req GET "/products/$PROD_CUST"); VAR_CUST="$(jqr '.variants[0].id')"
+req POST "/admin/variants/$VAR_CUST/stock" '{"quantity":50,"reason":"cust section"}' >/dev/null
+[ -n "$VAR_CUST" ] && [ "$VAR_CUST" != "null" ] && ok 19.0 "producto de la sección listo" || ko 19.0 "sin variante"
+
+# --- 1. compra como INVITADO, sin cuenta y sin nada ---
+st=$(dom POST /orders "$CH" \
+  "{\"customer\":{\"email\":\"$CEMAIL\",\"phone\":\"+56911111111\",\"name\":\"Juan\"},\"items\":[{\"productVariantId\":\"$VAR_CUST\",\"quantity\":1}]}")
+assert_status 19.1a "checkout de invitado por dominio" 200 "$st"
+GORD="$(jqr '.orderId')"
+[ -n "$GORD" ] && [ "$GORD" != "null" ] && ok 19.1b "el invitado se lleva su pedido" || ko 19.1b "sin orderId"
+
+# --- 2. se registra CON EL MISMO EMAIL: promueve, no duplica ---
+st=$(dom POST /auth/customer/register "$CH" \
+  "{\"email\":\"$CEMAIL\",\"password\":\"$CPASS\",\"phone\":\"+56911111111\",\"name\":\"Juan\"}" "$JAR_C")
+assert_status 19.2a "registro con un email que ya compró de invitado" 200 "$st"
+assert_eq 19.2b "es la misma persona" "$CEMAIL" "$(jqr '.email')"
+assert_eq 19.2c "el token no viaja en el body" "null" "$(jqr '.token')"
+grep -q "lewik_store_session" "$JAR_C" && ok 19.2d "dejó la cookie del storefront" || ko 19.2d "sin cookie"
+grep -q "^#HttpOnly_" "$JAR_C" && ok 19.2e "cookie HttpOnly" || ko 19.2e "cookie no es HttpOnly"
+
+# --- 3. ⭐ y encuentra su compra ANTERIOR de invitado dentro de su cuenta ---
+# Esto es lo que se cobra del modelo unificado de 2.4.3: un solo Customer con o sin
+# contraseña. Si el registro hubiera creado otra fila, esta lista vendría vacía.
+st=$(dom GET /account/orders "$CH" "" "$JAR_C")
+assert_status 19.3a "ve sus pedidos" 200 "$st"
+assert_eq 19.3b "conserva el historial de cuando era invitado" "1" "$(jqr "[.[] | select(.id==\"$GORD\")] | length")"
+
+# --- 4. compra logueado, sin volver a dar datos de contacto ---
+st=$(dom POST /orders "$CH" "{\"items\":[{\"productVariantId\":\"$VAR_CUST\",\"quantity\":1}]}" "$JAR_C")
+assert_status 19.4a "checkout logueado sin datos de contacto" 200 "$st"
+LORD="$(jqr '.orderId')"
+st=$(dom GET /account/orders "$CH" "" "$JAR_C")
+assert_eq 19.4b "queda asociado a su cuenta" "1" "$(jqr "[.[] | select(.id==\"$LORD\")] | length")"
+assert_eq 19.4c "y ahora tiene dos" "2" "$(jqr 'length')"
+# Sin sesión los datos de contacto siguen siendo obligatorios.
+st=$(dom POST /orders "$CH" "{\"items\":[{\"productVariantId\":\"$VAR_CUST\",\"quantity\":1}]}")
+assert_status 19.4d "de invitado, sin contacto -> 400" 400 "$st"
+
+# --- 5. registrarse de nuevo ---
+st=$(dom POST /auth/customer/register "$CH" \
+  "{\"email\":\"$CEMAIL\",\"password\":\"otra-clave-123\",\"phone\":\"+56911111111\",\"name\":\"Juan\"}")
+assert_title 19.5 "el mismo email dos veces" 409 "customer.already_registered" "$st"
+
+# --- 6. login, y una revocación que se mide de verdad ---
+st=$(dom POST /auth/customer/login "$CH" "{\"email\":\"$CEMAIL\",\"password\":\"$CPASS\"}" "$JAR_C2")
+assert_status 19.6a "login del comprador" 200 "$st"
+st=$(dom GET /account/me "$CH" "" "$JAR_C2"); assert_status 19.6b "usa la sesión" 200 "$st"
+# Mayúsculas en el email: el mismo cliente.
+st=$(dom POST /auth/customer/login "$CH" "{\"email\":\"JUAN-$RUN@TEST.CL\",\"password\":\"$CPASS\"}" "")
+assert_status 19.6c "login con el email en mayúsculas" 200 "$st"
+st=$(dom POST /auth/customer/login "$CH" "{\"email\":\"$CEMAIL\",\"password\":\"clave-equivocada\"}" "")
+assert_title 19.6d "contraseña equivocada" 400 "auth.invalid_credentials" "$st"
+# Un email que NO existe da el mismo error, palabra por palabra.
+st=$(dom POST /auth/customer/login "$CH" "{\"email\":\"nadie-$RUN@test.cl\",\"password\":\"$CPASS\"}" "")
+assert_title 19.6e "email inexistente: error idéntico" 400 "auth.invalid_credentials" "$st"
+# Un invitado tampoco puede entrar: no tiene contraseña, y no se le dice eso.
+st=$(dom POST /orders "$CH" \
+  "{\"customer\":{\"email\":\"guest-$RUN@test.cl\",\"phone\":\"+56900000000\"},\"items\":[{\"productVariantId\":\"$VAR_CUST\",\"quantity\":1}]}" )
+st=$(dom POST /auth/customer/login "$CH" "{\"email\":\"guest-$RUN@test.cl\",\"password\":\"$CPASS\"}" "")
+assert_title 19.6f "un invitado no tiene con qué entrar" 400 "auth.invalid_credentials" "$st"
+# Logout: con el token crudo, para medir la revocación del servidor y no el borrado de cookie.
+CTOK2="$(awk '/lewik_store_session/ {print $7}' "$JAR_C2")"
+st=$(dom POST /auth/customer/logout "$CH" "" "$JAR_C2"); assert_status 19.6g "logout" 204 "$st"
+st=$(curl -s -o "$BODY" -w '%{http_code}' "$API/account/me" \
+  -H "Host: $CH" -H "Cookie: lewik_store_session=$CTOK2")
+assert_status 19.6h "su sesión muere en el acto, no al vencer la caché" 401 "$st"
+
+# --- 7. ⭐ las tres poblaciones están selladas ---
+# Con el token crudo bajo el nombre de cookie de la OTRA población: si esto pasara, las
+# cookies distintas serían decoración y lo que separa a un comprador de un cajero sería
+# solo que el navegador no manda la cookie.
+CTOK="$(awk '/lewik_store_session/ {print $7}' "$JAR_C")"
+st=$(curl -s -o "$BODY" -w '%{http_code}' "$API/admin/orders/$TO" \
+  -H "Host: panel.$SLUG_A.localhost" -H "Cookie: lewik_panel_session=$CTOK")
+assert_status 19.7a "token de comprador en la cookie del panel" 401 "$st"
+st=$(curl -s -o "$BODY" -w '%{http_code}' "$API/account/orders" \
+  -H "Host: $CH" -H "Cookie: lewik_store_session=$DTOK")
+assert_status 19.7b "token de staff en la cookie del storefront" 401 "$st"
+# Y con su propia cookie, cada uno en la puerta del otro.
+st=$(dom GET "/admin/orders/$TO" "$CH" "" "$JAR_C")
+assert_status 19.7c "comprador en el panel" 401 "$st"
+st=$(dom GET /account/orders "panel.$SLUG_A.localhost" "" "$JAR_DOM")
+assert_status 19.7d "staff en la cuenta del comprador" 401 "$st"
+# El operador de plataforma tampoco es un comprador.
+st=$(curl -s -o "$BODY" -w '%{http_code}' "$API/account/orders" \
+  -H "Host: $CH" -H "Cookie: lewik_store_session=$(awk '/lewik_platform_session/ {print $7}' "$JARP")")
+assert_status 19.7e "token de plataforma en la cookie del storefront" 401 "$st"
+
+# --- 8. un comprador no ve los pedidos de otro ---
+st=$(dom POST /auth/customer/register "$CH" \
+  "{\"email\":\"ana-$RUN@test.cl\",\"password\":\"clave-de-ana-123\",\"phone\":\"+56922222222\",\"name\":\"Ana\"}" "$JAR_C3")
+assert_status 19.8a "se registra otra compradora" 200 "$st"
+st=$(dom POST /orders "$CH" "{\"items\":[{\"productVariantId\":\"$VAR_CUST\",\"quantity\":1}]}" "$JAR_C3")
+AORD="$(jqr '.orderId')"
+st=$(dom GET "/account/orders/$AORD" "$CH" "" "$JAR_C3")
+assert_status 19.8b "Ana ve su pedido" 200 "$st"
+# 404 y no 403: un 403 confirmaría que el pedido existe.
+st=$(dom GET "/account/orders/$AORD" "$CH" "" "$JAR_C")
+assert_title 19.8c "Juan pide el pedido de Ana" 404 "order.not_found" "$st"
+st=$(dom GET /account/orders "$CH" "" "$JAR_C3")
+assert_eq 19.8d "y la lista de Ana es solo la de Ana" "1" "$(jqr 'length')"
+
+# --- 9. ⭐ un cliente de A no es cliente de B ---
+st=$(curl -s -o "$BODY" -w '%{http_code}' "$API/account/orders" \
+  -H "Host: $SLUG_B.localhost" -H "Cookie: lewik_store_session=$CTOK")
+assert_status 19.9 "la sesión de Juan contra el dominio de otra tienda" 403 "$st"
+
+# --- 10. ⭐ registrarse NO resetea los topes anti-scalping ---
+# Es el mismo Customer, así que el historial es el mismo. Vale probarlo porque un modelo
+# con dos filas (invitado y registrado) daría dos contadores y un tope de dos por cliente
+# se compraría dos veces.
+LIMLOW="lim-$RUN@test.cl"; LIMUP="LIM-$RUN@TEST.CL"
+# SKU CAP-, no LIM-: la sección 6 ya usa LIM-$RUN para su producto sonda y el SKU es único
+# por tienda, así que repetirlo daba un 409 que se arrastraba hasta el final de la sección.
+st=$(req POST /admin/products "{\"sku\":\"CAP-$RUN\",\"name\":\"Alt Art\",\"price\":50000,\"currency\":\"CLP\"}")
+PROD_LIM="$(jqr '.')"
+assert_status 19.10a0 "crear el producto con tope" 200 "$st"
+st=$(req GET "/products/$PROD_LIM"); VAR_LIM="$(jqr '.variants[0].id')"
+req POST "/admin/variants/$VAR_LIM/stock" '{"quantity":30,"reason":"limit section"}' >/dev/null
+st=$(req PUT "/admin/products/$PROD_LIM/purchase-limit" '{"maxPerOrder":2,"maxPerCustomer":2,"windowDays":30}')
+assert_eq 19.10a "tope de 2 por cliente" "2" "$(jqnum '.maxPerCustomer')"
+
+st=$(dom POST /orders "$CH" \
+  "{\"customer\":{\"email\":\"$LIMLOW\",\"phone\":\"+56933333333\"},\"items\":[{\"productVariantId\":\"$VAR_LIM\",\"quantity\":2}]}")
+assert_status 19.10b "de invitado compra las 2 que le tocan" 200 "$st"
+st=$(dom POST /orders "$CH" \
+  "{\"customer\":{\"email\":\"$LIMLOW\",\"phone\":\"+56933333333\"},\"items\":[{\"productVariantId\":\"$VAR_LIM\",\"quantity\":1}]}")
+assert_title 19.10c "la tercera no" 409 "order.limit_per_customer" "$st"
+# ⭐ Con el email en MAYÚSCULAS. El índice (tenant, email) compara con case, así que sin
+# normalizar el email esto sería otro cliente con el contador en cero.
+st=$(dom POST /orders "$CH" \
+  "{\"customer\":{\"email\":\"$LIMUP\",\"phone\":\"+56933333333\"},\"items\":[{\"productVariantId\":\"$VAR_LIM\",\"quantity\":1}]}")
+assert_title 19.10d "cambiar mayúsculas no da un contador nuevo" 409 "order.limit_per_customer" "$st"
+# Y ahora se registra: promueve la misma fila, así que el contador sigue donde estaba.
+JAR_LIM="$BODY.jar.lim"; touch "$JAR_LIM"
+st=$(dom POST /auth/customer/register "$CH" \
+  "{\"email\":\"$LIMLOW\",\"password\":\"clave-larga-123\",\"phone\":\"+56933333333\"}" "$JAR_LIM")
+assert_status 19.10e "se registra con ese email" 200 "$st"
+st=$(dom GET /account/orders "$CH" "" "$JAR_LIM")
+assert_eq 19.10f "hereda la compra que hizo de invitado" "1" "$(jqr 'length')"
+st=$(dom POST /orders "$CH" "{\"items\":[{\"productVariantId\":\"$VAR_LIM\",\"quantity\":1}]}" "$JAR_LIM")
+assert_title 19.10g "registrarse no le devuelve el cupo" 409 "order.limit_per_customer" "$st"
+
+# =============================================================================
 section "RESUMEN"
 printf "  ${G}PASS: %d${Z}   ${R}FAIL: %d${Z}   ${Y}WARN: %d${Z}   (RUN=%s)\n" "$PASS" "$FAIL" "$WARN" "$RUN"
 [ "$WARN" -gt 0 ] && echo "  (WARN = zonas de riesgo pendientes; tras F1–F8 deberían ser 0)"

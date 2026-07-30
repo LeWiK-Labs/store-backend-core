@@ -78,13 +78,17 @@ public class SessionTests
 public class SessionCacheKeyTests
 {
     [Fact]
-    public void The_two_populations_never_share_a_cache_key()
+    public void No_two_populations_share_a_cache_key()
     {
-        // If they collided, a staff session could be served from a platform cache entry.
+        // If any two collided, one population's session could be served from another's cache
+        // entry — a buyer's token resolving to a staff principal, or worse.
         var hash = OpaqueToken.Hash("same-token");
 
-        Assert.NotEqual(SessionCacheKeys.For(hash, isPlatform: true),
-                        SessionCacheKeys.For(hash, isPlatform: false));
+        var keys = Enum.GetValues<SessionAudience>()
+            .Select(a => SessionCacheKeys.For(hash, a))
+            .ToList();
+
+        Assert.Equal(keys.Count, keys.Distinct().Count());
     }
 
     [Fact]
@@ -93,7 +97,7 @@ public class SessionCacheKeyTests
         // Redis must never hold anything that could be replayed as a credential.
         var token = OpaqueToken.Generate();
 
-        var key = SessionCacheKeys.For(OpaqueToken.Hash(token), isPlatform: false);
+        var key = SessionCacheKeys.For(OpaqueToken.Hash(token), SessionAudience.Staff);
 
         Assert.DoesNotContain(token, key);
         Assert.Contains(OpaqueToken.Hash(token), key);
@@ -105,8 +109,8 @@ public class SessionCacheKeyTests
         // The whole instant-revocation story depends on these agreeing.
         var token = OpaqueToken.Generate();
 
-        Assert.Equal(SessionCacheKeys.For(OpaqueToken.Hash(token), false),
-                     SessionCacheKeys.For(OpaqueToken.Hash(token), false));
+        Assert.Equal(SessionCacheKeys.For(OpaqueToken.Hash(token), SessionAudience.Customer),
+                     SessionCacheKeys.For(OpaqueToken.Hash(token), SessionAudience.Customer));
     }
 }
 

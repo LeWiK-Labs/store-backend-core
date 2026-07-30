@@ -24,3 +24,11 @@ variables:
   - name: operatorPassword
     value: cambiar-esto-ya-1234
     enabled: true
+  # Mismo email que en la tienda A a propósito: la unicidad es por tienda, así que
+  # son dos clientes distintos con contraseñas distintas.
+  - name: customerEmail
+    value: cliente@test.cl
+    enabled: true
+  - name: customerPassword
+    value: micontrasena456
+    enabled: true

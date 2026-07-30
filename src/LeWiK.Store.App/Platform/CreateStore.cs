@@ -2,6 +2,7 @@ using FluentValidation;
 using LeWiK.Store.App.Common.Messaging;
 using LeWiK.Store.App.Common.Persistence;
 using LeWiK.Store.App.Common.Results;
+using LeWiK.Store.App.Common.Security;
 using LeWiK.Store.App.Platform.Domain;
 using MediatR;
 using Microsoft.EntityFrameworkCore;

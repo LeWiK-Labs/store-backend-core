@@ -26,3 +26,11 @@ variables:
   - name: operatorPassword
     value: cambiar-esto-ya-1234
     enabled: true
+  # El comprador. Para ver la promoción de invitado a registrado, corré primero
+  # Orders > Checkout con este mismo email y después Account > Register.
+  - name: customerEmail
+    value: cliente@test.cl
+    enabled: true
+  - name: customerPassword
+    value: micontrasena123
+    enabled: true

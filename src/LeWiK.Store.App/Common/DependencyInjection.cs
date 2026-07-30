@@ -42,7 +42,7 @@ public static class DependencyInjection
         services.AddScoped<IBackOfficeClient, Platform.LocalEntitlementService>();
 
         services.AddScoped<Orders.PurchaseLimitEnforcer>();
-        services.AddSingleton<Platform.PasswordHasher>();
+        services.AddSingleton<Security.PasswordHasher>();
         
         // Distributed cache: Redis when configured, in-memory fallback otherwise.
         if (!string.IsNullOrEmpty(redisConnectionString))

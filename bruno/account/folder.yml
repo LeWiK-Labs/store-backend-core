@@ -1,0 +1,18 @@
+# folder.yml
+info: { name: Account (buyer), type: folder, seq: 6 }
+docs: |-
+  La tercera población: el comprador del storefront. Puede comprar como invitado
+  (siempre pudo) o tener cuenta.
+
+  Registrado e invitado son **el mismo `Customer`**, con o sin contraseña. Como el
+  email es único por tienda, un invitado que se registra después conserva su
+  historial de compras — corré *Checkout* con un email nuevo, después *Register*
+  con ese mismo email, y *My Orders* ya trae esa compra.
+
+  Cookie propia (`lewik_store_session`), scheme propio y tabla propia, así que un
+  comprador nunca satisface una política de staff ni al revés. Y la política de
+  cliente exige tenant match: la sesión de un cliente de una tienda responde 403
+  contra el dominio de otra.
+
+  Registrarse **no** resetea los topes anti-scalping: es el mismo cliente, así que
+  el historial que cuentan los límites es el mismo.

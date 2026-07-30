@@ -3,6 +3,7 @@ using System.Text.Encodings.Web;
 using System.Text.Json;
 using LeWiK.Store.App.Common.Persistence;
 using LeWiK.Store.App.Common.Security;
+using LeWiK.Store.App.Customers.Domain;
 using LeWiK.Store.App.Platform;
 using LeWiK.Store.App.Platform.Domain;
 using Microsoft.AspNetCore.Authentication;
@@ -16,12 +17,16 @@ public static class AuthSchemes
 {
     public const string Staff = "StaffSession";
     public const string Platform = "PlatformSession";
+    public const string Customer = "CustomerSession";
 }
 
+// Three cookies for three populations. Distinct names are not cosmetic: they are what keeps a
+// buyer's credential from ever being offered to a staff policy, on a host that serves both.
 public static class AuthCookies
 {
     public const string Staff = "lewik_panel_session";
     public const string Platform = "lewik_platform_session";
+    public const string Customer = "lewik_store_session";
 }
 
 public static class AuthClaims
@@ -40,7 +45,7 @@ public abstract class SessionAuthenticationHandler(
     : AuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)
 {
     protected abstract string CookieName { get; }
-    protected abstract bool IsPlatform { get; }
+    protected abstract SessionAudience Audience { get; }
     protected abstract Task<SessionPrincipal?> LoadAsync(string tokenHash);
 
     protected StoreDbContext Db => db;
@@ -54,7 +59,7 @@ public abstract class SessionAuthenticationHandler(
             return AuthenticateResult.NoResult();
 
         var hash = OpaqueToken.Hash(token);
-        var cacheKey = SessionCacheKeys.For(hash, IsPlatform);
+        var cacheKey = SessionCacheKeys.For(hash, Audience);
 
         SessionPrincipal? principal = null;
         var cached = await cache.GetStringAsync(cacheKey);
@@ -99,7 +104,7 @@ public sealed class StaffSessionHandler(
     : SessionAuthenticationHandler(options, logger, encoder, db, cache)
 {
     protected override string CookieName => AuthCookies.Staff;
-    protected override bool IsPlatform => false;
+    protected override SessionAudience Audience => SessionAudience.Staff;
 
     protected override async Task<SessionPrincipal?> LoadAsync(string tokenHash)
     {
@@ -128,7 +133,7 @@ public sealed class PlatformSessionHandler(
     : SessionAuthenticationHandler(options, logger, encoder, db, cache)
 {
     protected override string CookieName => AuthCookies.Platform;
-    protected override bool IsPlatform => true;
+    protected override SessionAudience Audience => SessionAudience.Platform;
 
     protected override async Task<SessionPrincipal?> LoadAsync(string tokenHash)
     {
@@ -138,6 +143,31 @@ public sealed class PlatformSessionHandler(
             .Join(Db.Set<PlatformOperator>().Where(o => o.IsActive),
                 s => s.PlatformOperatorId, o => o.Id,
                 (s, o) => new SessionPrincipal(o.Id, null, "PlatformOperator", o.Name))
+            .FirstOrDefaultAsync();
+    }
+}
+
+public sealed class CustomerSessionHandler(
+    IOptionsMonitor<AuthenticationSchemeOptions> options, ILoggerFactory logger, UrlEncoder encoder,
+    StoreDbContext db, IDistributedCache cache)
+    : SessionAuthenticationHandler(options, logger, encoder, db, cache)
+{
+    protected override string CookieName => AuthCookies.Customer;
+    protected override SessionAudience Audience => SessionAudience.Customer;
+
+    protected override async Task<SessionPrincipal?> LoadAsync(string tokenHash)
+    {
+        var now = DateTime.UtcNow;
+
+        // IgnoreQueryFilters for the same reason as staff: the session is what names the store,
+        // so filtering the customer by a tenant we have not established yet would find nothing.
+        // The role is the constant "Customer" — buyers have no roles, and hardcoding it here is
+        // what stops a customer principal from ever satisfying a staff role requirement.
+        return await Db.Set<CustomerSession>()
+            .Where(s => s.TokenHash == tokenHash && s.RevokedAt == null && s.ExpiresAt > now)
+            .Join(Db.Set<Customer>().IgnoreQueryFilters(),
+                s => s.CustomerId, c => c.Id,
+                (s, c) => new SessionPrincipal(c.Id, s.TenantId, "Customer", c.Name ?? c.Email))
             .FirstOrDefaultAsync();
     }
 }

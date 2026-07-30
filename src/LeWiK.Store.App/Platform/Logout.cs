@@ -36,16 +36,11 @@ public sealed class LogoutHandler(StoreDbContext db, IDistributedCache cache)
         // This line is what makes revocation instant. The authentication handler serves from
         // cache, so without dropping the key the session would keep working until the TTL
         // expired — which is exactly the window a POS logout cannot afford.
-        await cache.RemoveAsync(SessionCacheKeys.For(hash, request.IsPlatform), ct);
+        await cache.RemoveAsync(
+            SessionCacheKeys.For(hash, request.IsPlatform ? SessionAudience.Platform : SessionAudience.Staff), ct);
 
         // Unknown or already-revoked tokens still succeed: logout is idempotent, and telling
         // a caller their token was unrecognised is information they have no use for.
         return Result.Success();
     }
-}
-
-public static class SessionCacheKeys
-{
-    public static string For(string tokenHash, bool isPlatform) =>
-        $"session:{(isPlatform ? "platform" : "staff")}:{tokenHash}";
 }

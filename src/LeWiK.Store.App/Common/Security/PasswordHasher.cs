@@ -1,6 +1,6 @@
 using Microsoft.AspNetCore.Identity;
 
-namespace LeWiK.Store.App.Platform;
+namespace LeWiK.Store.App.Common.Security;
 
 // Thin wrapper over ASP.NET's PBKDF2 hasher, which handles salt and iteration count itself.
 // Only this slice of Identity is taken on purpose: the full stack would drag in its own user

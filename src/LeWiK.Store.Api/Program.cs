@@ -1,5 +1,6 @@
 using LeWiK.Store.Api.Auth;
 using LeWiK.Store.Api.Catalog;
+using LeWiK.Store.Api.Customers;
 using LeWiK.Store.Api.Inventory;
 using LeWiK.Store.Api.Orders;
 using LeWiK.Store.Api.Payments;
@@ -9,6 +10,7 @@ using LeWiK.Store.App.Platform;
 using LeWiK.Store.App.Platform.Domain;
 using LeWiK.Store.App.Common;
 using LeWiK.Store.App.Common.BackOffice;
+using LeWiK.Store.App.Common.Security;
 using LeWiK.Store.App.Common.Persistence;
 using LeWiK.Store.App.Common.Tenancy;
 using Microsoft.EntityFrameworkCore;
@@ -112,6 +114,7 @@ app.MapPaymentEndpoints();
 app.MapPaymentLinkEndpoints();
 app.MapPlatformEndpoints();
 app.MapAuthEndpoints();
+app.MapCustomerAuthEndpoints();
 
 // TEMPORARY smoke endpoint — remove once entitlement is enforced for real
 app.MapGet("/health/entitlement", async (ITenantContext tenant, IBackOfficeClient backOffice) =>

@@ -1,6 +1,7 @@
 using LeWiK.Store.App.Common.Messaging;
 using LeWiK.Store.App.Common.Persistence;
 using LeWiK.Store.App.Common.Results;
+using LeWiK.Store.App.Common.Security;
 using LeWiK.Store.App.Platform.Domain;
 using MediatR;
 using Microsoft.EntityFrameworkCore;
@@ -38,7 +39,7 @@ public sealed class SetStaffUserStatusHandler(StoreDbContext db, IDistributedCac
             foreach (var session in sessions)
             {
                 session.Revoke();
-                await cache.RemoveAsync(SessionCacheKeys.For(session.TokenHash, isPlatform: false), ct);
+                await cache.RemoveAsync(SessionCacheKeys.For(session.TokenHash, SessionAudience.Staff), ct);
             }
         }
 

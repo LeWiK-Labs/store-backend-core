@@ -1,0 +1,53 @@
+info:
+  name: Register
+  type: http
+  seq: 1
+http:
+  method: POST
+  url: "{{baseUrl}}/auth/customer/register"
+  headers:
+    - name: Content-Type
+      value: application/json
+  body:
+    type: json
+    data: |-
+      {
+        "email": "{{customerEmail}}",
+        "password": "{{customerPassword}}",
+        "phone": "+56911111111",
+        "name": "Cliente Test"
+      }
+  auth: inherit
+runtime:
+  scripts:
+    - type: tests
+      code: |-
+        test("returns 200", function() { expect(res.status).to.equal(200); });
+        test("no token in the body", function() { expect(res.body.token).to.be.undefined; });
+settings:
+  encodeUrl: true
+docs: |-
+  # Register
+  Crea la cuenta del comprador en la tienda activa. Si ese email **ya compró como
+  invitado**, promueve esa misma fila en vez de crear otra: la cuenta nace con el
+  historial de compras ya adentro. Es el caso que vale la pena probar.
+
+  El token no vuelve en el body: viaja en la cookie `lewik_store_session`, HttpOnly
+  y sin atributo `Domain`, así que el storefront nunca la comparte con el panel.
+
+  ## Body
+  | campo | req | nota |
+  |---|:--:|---|
+  | email | sí | único por tienda; se normaliza a minúsculas |
+  | password | sí | mín 8 |
+  | phone | sí | |
+  | name | no | si no lo mandás, se conserva el que ya hubiera |
+
+  ## Respuestas
+  - **200** — `{ name, email, expiresAt }` + cookie
+  - **409** `customer.already_registered` — ese email ya tiene cuenta (entrá por Login)
+  - **400** — validación
+
+  ⚠️ Nada acá prueba que quien se registra sea el dueño del email. Mientras no haya
+  envío de correo (y por lo tanto verificación), conocer un email que compró de
+  invitado alcanza para reclamar ese historial.

@@ -45,8 +45,13 @@ docs: |-
   | `/admin/*` | staff de ESA tienda (sesión + tenant match) |
   | `/admin/staff/*` | owner o admin |
   | `/admin/payment-methods/*` | solo owner — decide a qué cuenta llega la plata |
-  | público | catálogo de lectura, stock/drop, checkout, iniciar pago |
+  | `/account/*` | el comprador con cuenta, de ESA tienda |
+  | público | catálogo de lectura, stock/drop, checkout, iniciar pago, registro y login de comprador |
   | `/pay/{token}/*` | el invitado, con el token que le dio el checkout |
+
+  Tres poblaciones, tres cookies, tres tablas: `lewik_platform_session`,
+  `lewik_panel_session` y `lewik_store_session`. Ninguna credencial sirve en la
+  puerta de otra población, y las tres políticas de tienda exigen tenant match.
 
   Todo lo que cambia estado bajo `/admin` o `/platform` necesita además el header
   `X-Requested-With: LeWiKPanel` (capa extra sobre SameSite=Lax y CORS estricto).
