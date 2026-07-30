@@ -23,6 +23,14 @@ public static class PreorderEndpoints
             .RequireAuthorization(AuthPolicies.StoreStaff)
             .RequireCsrfHeader();
 
+        // Admin: the drop is over. From here the variant sells from physical stock — which is the
+        // only way back, since Checkout prefers an active preorder over stock unconditionally.
+        app.MapPost("/admin/variants/{variantId:guid}/preorder/close",
+                async (Guid variantId, ISender sender) =>
+                    (await sender.Send(new ClosePreorderCommand(variantId))).ToHttpResult())
+            .RequireAuthorization(AuthPolicies.StoreStaff)
+            .RequireCsrfHeader();
+
         return app;
     }
 }

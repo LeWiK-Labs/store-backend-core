@@ -1646,6 +1646,82 @@ assert_eq 21.6c "y nada de lo que se dio de baja" "0" \
   "$(printf '%s' "$FRAMES" | grep -c "$VLIVED\"" || true)"
 
 # =============================================================================
+section "22 · Cierre de un drop (la variante vuelve a stock)"
+# Hasta 4.7.1 no había nada que terminara una preventa: Checkout prefiere el drop activo sobre el
+# stock SIN condición, y no existía la transición de vuelta. Una variante que alguna vez fue drop
+# era drop para siempre, y las unidades que llegaban al depósito quedaban inalcanzables detrás de
+# un contador de cupo. Bajar capacity a lo vendido tampoco servía: dejaba la variante invendible.
+
+st=$(req POST /admin/products "{\"sku\":\"CLOSE-$RUN\",\"name\":\"ZZ Drop que cierra\",\"price\":20000,\"currency\":\"CLP\"}")
+PROD_CL="$(jqr '.')"
+st=$(req GET "/products/$PROD_CL"); VCL="$(jqr '.variants[0].id')"
+req PUT "/admin/variants/$VCL/preorder" \
+  '{"capacity":10,"releaseDate":"2026-12-01T00:00:00Z","depositType":"Percentage","depositValue":30}' >/dev/null
+
+# --- 22.1 el drop vende por cupo y cobra abono ---
+st=$(dom POST /orders "$HOST_A" \
+  "{\"customer\":{\"email\":\"drop-$RUN@test.cl\",\"phone\":\"+56955555555\"},\"items\":[{\"productVariantId\":\"$VCL\",\"quantity\":2}]}")
+OCL="$(jqr '.orderId')"
+assert_status 22.1a "checkout de preventa" 200 "$st"
+req GET "/admin/orders/$OCL" >/dev/null
+assert_eq 22.1b "línea de preventa, y solo se debe el abono" "true 12000" \
+  "$(jqr '"\(.lines[0].isPreorder) \(.depositDue)"')"
+
+# Llega la mercadería: el local carga las 10 unidades.
+req POST "/admin/variants/$VCL/stock" '{"quantity":10,"reason":"llego el drop"}' >/dev/null
+st=$(dom GET /storefront "$HOST_A")
+assert_eq 22.1c "con el drop abierto la vidriera sigue mostrando cupo, no stock" "Preorder 8" \
+  "$(jqr "[.products[].variants[] | select(.id==\"$VCL\")][0].availability | \"\(.kind) \(.available)\"")"
+
+# --- 22.2 ⭐ cerrar el drop devuelve la variante al stock ---
+# Alguien lo decide: cerrar es un hecho DEL DROP (llegó la mercadería, se acabó la ventana), no de
+# un pedido. Si lo cerrara el primer release, un pedido cualquiera terminaría el drop de todos.
+IDC="$(hub_open "$HOST_A")" || IDC=""
+hub_invoke "$IDC" "$HOST_A" WatchVariant "$VCL" >/dev/null
+st=$(req POST "/admin/variants/$VCL/preorder/close")
+assert_status 22.2a "cerrar el drop" 200 "$st"
+assert_eq 22.2b "queda Closed" "Closed" "$(jqr '.status')"
+st=$(dom GET /storefront "$HOST_A")
+assert_eq 22.2c "⭐ la vidriera pasa a vender del stock que llegó" "Stock 10 true" \
+  "$(jqr "[.products[].variants[] | select(.id==\"$VCL\")][0].availability | \"\(.kind) \(.available) \(.isSellable)\"")"
+# Y el contador de quien estaba mirando la página se entera solo, con la unidad correcta.
+FRAME="$(hub_poll "$IDC" "$HOST_A" 10 | grep availabilityChanged | head -1)"
+assert_eq 22.2d "⭐ el cambio de modo llega en vivo" "Stock 10 true" \
+  "$(printf '%s' "$FRAME" | jq -r '.arguments[0] | "\(.kind) \(.available) \(.isSellable)"' 2>/dev/null)"
+
+# --- 22.3 ⭐ y el comprador ahora compra de verdad, no reserva ---
+st=$(dom POST /orders "$HOST_A" \
+  "{\"customer\":{\"email\":\"post-drop-$RUN@test.cl\",\"phone\":\"+56966666666\"},\"items\":[{\"productVariantId\":\"$VCL\",\"quantity\":3}]}")
+OCL2="$(jqr '.orderId')"
+assert_status 22.3a "checkout después del cierre" 200 "$st"
+req GET "/admin/orders/$OCL2" >/dev/null
+# Antes del cierre esto habría sido otra línea de preventa con abono de 18.000 sobre mercadería
+# que ya estaba en el depósito, y el pedido habría quedado esperando otro release a mano.
+assert_eq 22.3b "⭐ línea de stock, y se debe el total" "false 60000" \
+  "$(jqr '"\(.lines[0].isPreorder) \(.depositDue)"')"
+req GET "/variants/$VCL/stock" >/dev/null
+assert_eq 22.3c "⭐ y ahora sí reserva unidades físicas" "7 3" \
+  "$(jqr '"\(.available) \(.reserved)"')"
+req GET "/variants/$VCL/preorder" >/dev/null
+assert_eq 22.3d "el cupo del drop cerrado no se movió" "2" "$(jqr '.soldCount')"
+
+# --- 22.4 las puertas cerradas ---
+st=$(req POST "/admin/variants/$VCL/preorder/close")
+assert_title 22.4a "cerrar dos veces" 409 "preorder.already_closed" "$st"
+# Sin esta guarda el PUT contesta 200, escribe la capacidad nueva, deja el Status en Closed y la
+# vidriera sigue vendiendo del stock: medido. Al operador le dicen que reconfiguró su drop y no
+# cambió nada que un comprador pueda ver. Reabrir tampoco es lo que hace, y no se ofrece: SoldCount
+# todavía cuenta el drop anterior, así que cancelar uno de sus pedidos viejos le devolvería cupo a
+# un drop del que esas unidades nunca fueron parte.
+st=$(req PUT "/admin/variants/$VCL/preorder" \
+  '{"capacity":50,"releaseDate":"2027-01-01T00:00:00Z","depositType":"Percentage","depositValue":30}')
+assert_title 22.4b "⭐ un drop cerrado no acepta ediciones mudas" 409 "preorder.closed" "$st"
+st=$(req POST "/admin/variants/$(guid)/preorder/close")
+assert_title 22.4c "cerrar una preventa que no existe" 404 "preorder.not_found" "$st"
+st=$(dom POST "/admin/variants/$VCL/preorder/close" "$HOST_A")
+assert_status 22.4d "cerrar sin sesión de staff" 401 "$st"
+
+# =============================================================================
 section "RESUMEN"
 printf "  ${G}PASS: %d${Z}   ${R}FAIL: %d${Z}   ${Y}WARN: %d${Z}   (RUN=%s)\n" "$PASS" "$FAIL" "$WARN" "$RUN"
 [ "$WARN" -gt 0 ] && echo "  (WARN = zonas de riesgo pendientes; tras F1–F8 deberían ser 0)"

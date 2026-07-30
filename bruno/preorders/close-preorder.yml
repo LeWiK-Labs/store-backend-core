@@ -1,0 +1,57 @@
+info:
+  name: Close Preorder (drop terminado)
+  type: http
+  seq: 3
+http:
+  method: POST
+  url: "{{baseUrl}}/admin/variants/{{variantId}}/preorder/close"
+  headers:
+    - name: X-Requested-With
+      value: LeWiKPanel
+  auth: inherit
+runtime:
+  scripts:
+    - type: tests
+      code: |-
+        test("returns 200", function() { expect(res.status).to.equal(200); });
+        test("queda Closed", function() { expect(res.body.status).to.equal("Closed"); });
+settings:
+  encodeUrl: true
+docs: |-
+  # Close Preorder
+  Termina el drop. **Es la única salida**: `Checkout` prefiere una preventa activa
+  sobre el stock sin condición, así que mientras el drop esté abierto la variante se
+  vende por cupo aunque la mercadería ya esté en el depósito.
+
+  Después de cerrar, la variante vende del stock físico, sin tocar nada más: todas
+  las lecturas y el checkout eligen preventa activa y caen a stock cuando no hay.
+
+  ## Por qué es un paso que alguien aprieta
+  Cerrar es un hecho **del drop** — llegó la mercadería, se acabó la ventana —, no de
+  un pedido. Si lo cerrara el primer `Release`, un pedido cualquiera terminaría el
+  drop para todos los demás, con el timing de un desconocido.
+
+  ## Qué cambia para el comprador
+  | | drop abierto | drop cerrado |
+  |---|---|---|
+  | `/storefront` | `kind: "Preorder"`, cupo restante | `kind: "Stock"`, unidades reales |
+  | checkout | línea de preventa, se debe el **abono** | línea normal, se debe el **total** |
+  | reserva | cupo (`soldCount`) | unidades físicas (`reserved`) |
+  | contador en vivo | cupo | stock — el cambio de modo llega solo por el hub |
+
+  El cupo no vendido no se convierte en nada: la capacidad de un drop siempre fue una
+  promesa sobre unidades que todavía no habían llegado, y cerrarlo es justo el momento
+  en que deja de ser el número correcto para mostrar. Lo que se vende de ahí en más es
+  el stock que el local haya cargado.
+
+  ## Respuestas
+  - **200** — el preorder con `status: "Closed"`
+  - **409** `preorder.already_closed` — ya estaba cerrado. No es idempotente a propósito,
+    igual que cancelar un pedido: a "¿ya lo hice?" hay que contestar que sí, no callarse.
+  - **404** `preorder.not_found` — esa variante nunca tuvo preventa
+
+  ## Ojo: cerrar no se deshace
+  *Configure Preorder* sobre un drop cerrado responde **409 `preorder.closed`**, no lo
+  reabre. `soldCount` todavía cuenta el drop anterior, así que cancelar uno de sus
+  pedidos viejos le devolvería cupo a un drop del que esas unidades nunca fueron parte.
+  Volver a correr un drop sobre la misma variante es una decisión pendiente.

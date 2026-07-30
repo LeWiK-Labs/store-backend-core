@@ -20,8 +20,12 @@ docs: |-
   Desde 4.7 el cupo también se empuja en vivo: `Preorder` pasó a agregado y levanta
   `PreorderCapacityChanged` cada vez que se reserva, se libera, se reconfigura o se
   cierra. Esta llamada sigue siendo la lectura puntual; el contador de la página de
-  un drop se alimenta del hub (ver la carpeta **Storefront**). Cerrar un drop se
-  emite como *no vendible* aunque queden cupos: un drop cerrado rechaza igual.
+  un drop se alimenta del hub (ver la carpeta **Storefront**). Cerrarlo también se emite:
+  la variante pasa a venderse del stock y el contador cambia de unidad de medida solo,
+  sin que nadie recargue.
+
+  Un drop cerrado se sigue leyendo acá con su `soldCount` y su `capacity` históricos —
+  es el registro del drop, no lo que se está vendiendo hoy. Para eso está `/storefront`.
 
   ## Respuestas
   - **200** — el preorder

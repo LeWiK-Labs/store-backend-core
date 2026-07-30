@@ -44,6 +44,11 @@ docs: |-
   no puede ofrecer lo que el checkout va a rechazar. Una variante sin ninguno de
   los dos se lee como `Stock 0`, que es lo que significa `order.no_stock`.
 
+  «Activa» es la palabra que hace el trabajo: cargar el stock de un drop **no** cambia
+  el `kind`, porque mientras el drop esté abierto la variante se sigue vendiendo por
+  cupo. Lo que lo cambia es cerrarlo (*Preorders > Close Preorder*), y ese cambio de
+  modo también viaja por el hub sin que nadie recargue.
+
   ## `limit`
   Trae **solo `maxPerOrder`**, a nivel de producto y de variante, para que el front
   cape el selector de cantidad en vez de dejar que el comprador descubra el tope con

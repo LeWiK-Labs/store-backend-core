@@ -49,6 +49,17 @@ public sealed class Preorder : AggregateRoot, ITenantScoped, IAuditable
     // Admin edits an existing drop. Can't drop capacity below what's already sold.
     public Result Reconfigure(int capacity, DateTime releaseDate, DepositType depositType, decimal depositValue)
     {
+        // A closed drop is finished. Without this the edit is worse than refused: measured, the
+        // PUT answers 200 and writes the new capacity, Status stays Closed, and the storefront
+        // keeps selling from stock — an operator is told their drop was reconfigured when nothing
+        // a buyer can see has changed.
+        //
+        // Reopening is deliberately not what this does either, because SoldCount still counts the
+        // previous drop: cancelling one of its old orders would hand capacity back to a drop those
+        // units were never part of. Re-running a drop on the same variant needs its own decision.
+        if (Status == PreorderStatus.Closed)
+            return PreorderErrors.Closed();
+
         if (capacity < SoldCount)
             return PreorderErrors.CapacityBelowSold(capacity, SoldCount);
         Capacity = capacity;
@@ -80,10 +91,19 @@ public sealed class Preorder : AggregateRoot, ITenantScoped, IAuditable
         RaiseCapacityChanged();
     }
 
-    public void Close()
+    // The drop is over: from here the variant sells from physical stock, because every read and
+    // Checkout itself pick an ACTIVE preorder over stock and fall back to stock when there isn't
+    // one. Until 4.7.1 nothing called this, so a variant that had ever been a drop stayed a drop
+    // forever — its restocked units unreachable behind a capacity counter.
+    //
+    // Not idempotent on purpose, same as Order.Cancel: closing twice is a second click or a
+    // second operator, and the answer to "did I already do this?" should be yes, not silence.
+    public Result Close()
     {
+        if (Status == PreorderStatus.Closed) return PreorderErrors.AlreadyClosed();
         Status = PreorderStatus.Closed;
         RaiseCapacityChanged();
+        return Result.Success();
     }
 
     // One place, so the four callers cannot disagree about what the event says — in particular

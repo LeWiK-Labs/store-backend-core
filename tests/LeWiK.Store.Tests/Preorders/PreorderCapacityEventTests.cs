@@ -123,6 +123,42 @@ public class PreorderCapacityEventTests
     }
 
     [Fact]
+    public void Closing_twice_is_refused_and_announces_nothing()
+    {
+        // Not idempotent on purpose: a second click or a second operator should be told, and a
+        // no-op must not repaint anyone's counter.
+        var p = NewPreorder(capacity: 10);
+        p.Close();
+        p.ClearDomainEvents();
+
+        var result = p.Close();
+
+        Assert.True(result.IsFailure);
+        Assert.Equal("preorder.already_closed", result.Error.Code);
+        Assert.Equal(0, Count(p));
+    }
+
+    [Fact]
+    public void A_closed_drop_cannot_be_reconfigured()
+    {
+        // ⭐ Without this the edit is accepted and does nothing anyone can see: capacity is
+        // written, Status stays Closed, the variant keeps selling from stock. A 200 for an edit
+        // with no visible effect is worse than a refusal, because the operator believes the drop
+        // is running again.
+        var p = NewPreorder(capacity: 10);
+        p.Close();
+        p.ClearDomainEvents();
+
+        var result = p.Reconfigure(50, DateTime.UtcNow.AddDays(60), DepositType.Percentage, 20);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal("preorder.closed", result.Error.Code);
+        Assert.Equal(10, p.Capacity);            // unchanged
+        Assert.Equal(PreorderStatus.Closed, p.Status);
+        Assert.Equal(0, Count(p));
+    }
+
+    [Fact]
     public void Events_are_cleared_once_dispatched()
     {
         // UnitOfWorkBehavior clears after publishing; a second command on the same tracked

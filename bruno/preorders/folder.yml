@@ -4,3 +4,21 @@ info:
   seq: 3
 docs: |-
   Configuración de drops/preventas por variante: cupo, fecha de release y abono.
+
+  ## El ciclo de vida, completo desde 4.7.1
+  1. **Configure Preorder** — la variante pasa a venderse por cupo. `Checkout` prefiere
+     una preventa activa sobre el stock **sin condición**, así que desde acá el stock
+     físico de esa variante no se toca.
+  2. Los compradores reservan cupo y pagan el **abono**. El cupo baja en vivo por el
+     hub (ver la carpeta **Storefront**).
+  3. Llega la mercadería y el local la carga con *Add Stock*. La vidriera **sigue**
+     mostrando cupo, porque el drop sigue abierto.
+  4. Cada pedido pagado se convierte a stock físico con `POST /admin/orders/{id}/release`.
+     Eso mueve **ese pedido**, no el drop.
+  5. **Close Preorder** — el drop terminó. La variante vuelve a venderse del stock, se
+     cobra el total en vez del abono, y se reservan unidades reales.
+
+  Sin el paso 5 la variante era drop **para siempre**: configurada la preventa no había
+  transición de vuelta, así que las unidades que llegaban al depósito quedaban
+  inalcanzables detrás de un contador de cupo. Bajar `capacity` a lo ya vendido tampoco
+  servía — dejaba la variante invendible, con `409 preorder.capacity_exceeded`.
