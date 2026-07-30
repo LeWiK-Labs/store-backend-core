@@ -164,8 +164,51 @@ Regla: si `status == 400` y hay `errors` → mostrar por campo; si no, usar `tit
 
 ## 4 · Autenticación
 
-Tres poblaciones **selladas entre sí**: una cookie de staff nunca sirve en el área de cliente ni
-al revés.
+### El modelo, en simple
+
+**No hay tokens que manejar.** El backend deja una cookie al hacer login y el navegador la manda
+sola. El front no la ve, no la guarda y no la pone en ningún header.
+
+Cinco reglas y no hay más:
+
+1. **`credentials: 'include'` en todas las llamadas.** Es lo único que hay que acordarse de hacer.
+   Si falta, el login devuelve 200 y **todo lo siguiente devuelve 401** — el error más confuso de
+   diagnosticar y el más fácil de prevenir.
+2. **Hay tres puertas, no una.** Comprador, staff y plataforma tienen cada uno su cookie y su
+   área, y no se cruzan. Son tres aplicaciones que comparten dominio, no un login con roles.
+3. **La tienda sale de la URL, no del front.** El backend la deduce del dominio de la request. El
+   front **nunca** manda un id de tienda (ver §2).
+4. **Para escribir en el panel, un header extra:** `X-Requested-With: LeWiKPanel` en todo
+   POST/PUT/DELETE bajo `/admin` y `/platform`. Los GET no lo necesitan; el storefront tampoco.
+5. **Para saber si hay sesión, preguntá.** La cookie es `HttpOnly` y el JS no la ve, a propósito.
+   Al arrancar la app llamás a `/auth/staff/me` o `/account/me`: 200 hay, 401 no hay.
+
+Las reglas 1 y 4 se resuelven de una vez en un interceptor y nadie más tiene que acordarse:
+
+```ts
+export const authInterceptor: HttpInterceptorFn = (req, next) => {
+  const esPanel = /\/(admin|platform)\//.test(req.url);
+  const escribe = req.method !== 'GET';
+  return next(req.clone({
+    withCredentials: true,
+    setHeaders: esPanel && escribe ? { 'X-Requested-With': 'LeWiKPanel' } : {}
+  }));
+};
+```
+
+**Lo más importante para planificar:** la tienda pública **no necesita login para nada**. Ver el
+catálogo, elegir, comprar, pagar y seguir el contador en vivo son todos anónimos. Se puede
+construir y probar la vidriera entera antes de tocar una pantalla de login — eso es para "mi
+cuenta" y para el panel, que son features aparte. El comprador sin cuenta recibe un `accessToken`
+en el checkout, que es su llave para volver a ver y pagar su pedido (§9).
+
+**Los dos errores:** **401** = no hay sesión (o venció, o la revocaron) → mandalo a login.
+**403** = hay sesión pero no puede — otro rol, otra tienda, o falta el header de la regla 4;
+reintentar no sirve y volver a loguearse tampoco.
+
+### Las tres poblaciones
+
+Están **selladas entre sí**: una cookie de staff nunca sirve en el área de cliente ni al revés.
 
 | Población | Login | Cookie | Área |
 |---|---|---|---|
