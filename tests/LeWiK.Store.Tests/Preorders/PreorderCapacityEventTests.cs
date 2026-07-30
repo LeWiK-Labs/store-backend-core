@@ -28,7 +28,7 @@ public class PreorderCapacityEventTests
         Assert.Equal(p.TenantId, e.TenantId);
         Assert.Equal(p.ProductVariantId, e.ProductVariantId);
         Assert.Equal(50, e.AvailableCapacity);
-        Assert.True(e.IsSellable);
+        Assert.True(e.IsOpen);
     }
 
     [Fact]
@@ -95,11 +95,12 @@ public class PreorderCapacityEventTests
     }
 
     [Fact]
-    public void Closing_a_drop_makes_it_unsellable_even_with_capacity_left()
+    public void Closing_a_drop_says_so_even_with_capacity_left()
     {
         // ⭐ The reason the event carries IsOpen and not just the numbers. A closed drop with 40
-        // units on paper refuses every order (preorder.closed); broadcasting "40, go ahead" would
-        // contradict both the storefront read — which only composes ACTIVE drops — and checkout.
+        // units on paper refuses every order (preorder.closed), so "40 left" on its own describes
+        // a drop you can still buy from, which is the opposite of what happened. What a buyer is
+        // then shown is AvailabilityFactory's call, not this event's.
         var p = NewPreorder(capacity: 40);
         p.ClearDomainEvents();
 
@@ -108,11 +109,10 @@ public class PreorderCapacityEventTests
 
         Assert.Equal(40, e.AvailableCapacity);
         Assert.False(e.IsOpen);
-        Assert.False(e.IsSellable);
     }
 
     [Fact]
-    public void An_open_drop_with_nothing_left_is_not_sellable()
+    public void An_open_drop_reports_running_out()
     {
         var p = NewPreorder(capacity: 2);
         p.ReserveCapacity(2);
@@ -120,7 +120,6 @@ public class PreorderCapacityEventTests
 
         Assert.Equal(0, e.AvailableCapacity);
         Assert.True(e.IsOpen);
-        Assert.False(e.IsSellable);
     }
 
     [Fact]

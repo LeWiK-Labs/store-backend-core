@@ -1606,12 +1606,22 @@ SNAP="$(hub_invoke "$IDA" "$HOST_A" WatchVariant "$VLIVED")"
 # La misma llamada resuelve la otra forma de vender: preventa activa gana sobre stock, igual que
 # en la vidriera y que en el checkout.
 assert_eq 21.4a "suscribirse a un drop devuelve su cupo" "Preorder 60 true" "$(hub_av "$SNAP")"
+
+# ⭐ Llega la mercadería del drop y el local la carga. El evento que se levanta es StockChanged,
+# pero la variante SE SIGUE VENDIENDO POR CUPO mientras el drop esté activo, así que el frame
+# tiene que seguir hablando de cupo. Emitiendo lo que dice el evento, la página saltaba de "60
+# cupos" a "25 unidades" —otro número y otra unidad de medida— y recargar la contradecía.
+req POST "/admin/variants/$VLIVED/stock" '{"quantity":25,"reason":"llego la mercaderia del drop"}' >/dev/null
+FRAME="$(hub_poll "$IDA" "$HOST_A" 10 | grep availabilityChanged | head -1)"
+assert_eq 21.4b "⭐ mover stock de un drop no cambia la unidad de medida" "Preorder 60 true" \
+  "$(printf '%s' "$FRAME" | jq -r '.arguments[0] | "\(.kind) \(.available) \(.isSellable)"' 2>/dev/null)"
+
 st=$(dom POST /orders "$HOST_A" \
   "{\"customer\":{\"email\":\"live-drop-$RUN@test.cl\",\"phone\":\"+56922222222\"},\"items\":[{\"productVariantId\":\"$VLIVED\",\"quantity\":4}]}")
 ODROP="$(jqr '.orderId')"
-assert_status 21.4b "checkout del drop" 200 "$st"
+assert_status 21.4c "checkout del drop" 200 "$st"
 FRAME="$(hub_poll "$IDA" "$HOST_A" 10 | grep availabilityChanged | head -1)"
-assert_eq 21.4c "⭐ el cupo baja en vivo" "Preorder 56 true" \
+assert_eq 21.4d "⭐ el cupo baja en vivo" "Preorder 56 true" \
   "$(printf '%s' "$FRAME" | jq -r '.arguments[0] | "\(.kind) \(.available) \(.isSellable)"' 2>/dev/null)"
 
 # --- 21.5 y sube solo cuando el cupo vuelve ---
